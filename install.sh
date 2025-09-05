@@ -542,14 +542,34 @@ run_certbot_webroot(){
 
 # ---------------- License & Download ----------------
 LICENSE_KEY=""
+PRODUCT_ID=""
+PRODUCT_NAME=""
+
 ask_license_key(){
   while :; do
     LICENSE_KEY=$(whiptail --title "$TITLE" --passwordbox "Enter your DezerX Spartan license key" 10 70 3>&1 1>&2 2>&3) || exit 1
     [[ -n "$LICENSE_KEY" ]] || { whiptail --title "$TITLE" --msgbox "License key is required." 8 50; continue; }
     local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
-    whiptail --title "$TITLE" --yesno "Use this license key?\n\n${masked}\n\nDomain: ${DOMAIN}\nProduct ID: 1" 12 70 && break
+    whiptail --title "$TITLE" --yesno "Use this license key?\n\n${masked}\n\nDomain: ${DOMAIN}" 12 70 && break
   done
   section "License key captured (masked)."
+}
+
+choose_product(){
+  PRODUCT_ID=$(whiptail --title "$TITLE" --radiolist "Select your DezerX Spartan product" 15 70 3 \
+    "1" "Spartan Starter" ON \
+    "5" "Spartan Professional" OFF \
+    "6" "Spartan Ultimate" OFF \
+    3>&1 1>&2 2>&3) || exit 1
+  
+  case "$PRODUCT_ID" in
+    "1") PRODUCT_NAME="Spartan Starter" ;;
+    "5") PRODUCT_NAME="Spartan Professional" ;;
+    "6") PRODUCT_NAME="Spartan Ultimate" ;;
+    *) die "Invalid product selection" ;;
+  esac
+  
+  section "Selected product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
 }
 
 install_download_tools(){
@@ -564,12 +584,12 @@ license_verify(){
   local API="https://market.dezerx.com/api/license/verify"
   local TMP; TMP="$(mktemp)"
   section "Verify license (GET)"
-  cmdshow "curl -fsS -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: 1' ${API}"
+  cmdshow "curl -fsS -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
   local CODE
   CODE=$(curl -sS -X GET "$API" \
       -H "Authorization: Bearer ${LICENSE_KEY}" \
       -H "X-Domain: ${DOMAIN}" \
-      -H "X-Product-ID: 1" \
+      -H "X-Product-ID: ${PRODUCT_ID}" \
       -H "Content-Type: application/json" \
       -o "$TMP" -w '%{http_code}') || CODE=0
 
@@ -585,7 +605,7 @@ license_verify(){
 
   [[ "$SUCCESS" == "true" && "$IS_ACTIVE" == "true" ]] || { echo "API response:"; cat "$TMP"; die "License not active/valid: ${MSG:-Unknown}"; }
 
-  echo "License OK: ${PNAME:-DezerX Spartan} (product_id=${PDID:-?})"
+  echo "License OK: ${PNAME:-${PRODUCT_NAME}} (product_id=${PDID:-${PRODUCT_ID}})"
   [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN"
 }
 
@@ -595,13 +615,13 @@ license_download_and_extract(){
   local RESP_FILE="$TMPDIR/resp.json"
 
   section "Request one-time download link (POST)"
-  cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: 1'"
+  cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
 
   local CODE
   CODE=$(curl -sS -X POST "$API" \
       -H "Authorization: Bearer ${LICENSE_KEY}" \
       -H "X-Domain: ${DOMAIN}" \
-      -H "X-Product-ID: 1" \
+      -H "X-Product-ID: ${PRODUCT_ID}" \
       -H "Content-Type: application/json" \
       -o "$RESP_FILE" -w '%{http_code}') || CODE=0
 
@@ -701,14 +721,17 @@ DB Port: ${DB_PORT}
 DB Name: ${DB_NAME}
 DB User: ${DB_USER}
 
-Proceed with installation (live output)?" 20 72 || exit 1
+Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
+
+Proceed with installation (live output)?" 22 72 || exit 1
 
 # Update caches early and ensure download tooling
 pm_update_upgrade 0
 install_download_tools
 
-# License: verify -> download -> extract to APP_DIR
+# License: ask key -> choose product -> verify -> download -> extract to APP_DIR
 ask_license_key
+choose_product
 license_verify
 license_download_and_extract
 
@@ -750,6 +773,7 @@ echo "App Path:     ${APP_DIR}"
 echo "DocumentRoot: ${APP_DIR}/public"
 echo "Web server:   ${WEB}"
 echo "DB engine:    ${DB_ENGINE}"
+echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
 php -v | grep -qi ioncube && echo "ionCube:     enabled" || echo "ionCube:     not detected"
 echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo "DB pass in:   ${APP_DIR}/.env"
