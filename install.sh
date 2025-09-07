@@ -3,6 +3,7 @@
 # Distros: Ubuntu/Debian, CentOS/RHEL/Alma/Rocky, Fedora
 
 set -euo pipefail
+trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/dezerx_installer.log"
@@ -18,7 +19,23 @@ ts() { date +"%Y-%m-%d %H:%M:%S"; }
 hr() { printf -- "---------------------------------------------------------------------\n"; }
 section() { hr; echo "[$(ts)] >>> $*"; hr; }
 cmdshow() { printf "\n$ %s\n\n" "$*"; }
-run() { local desc="$1"; shift; section "$desc"; cmdshow "$*"; "$@"; }
+run(){
+    local first="$1"
+    local desc cmdstr
+    shift
+    if have "$first" >/dev/null 2>&1; then
+        cmdstr="$first"
+        [[ $# -gt 0 ]] && cmdstr="$cmdstr $*"
+        desc="Running: $cmdstr"
+    else
+        desc="$first"
+        cmdstr="$*"
+    fi
+
+    section "$desc"
+    cmdshow "$*"
+    "$@"
+}
 
 need_root(){ [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }; }
 have(){ command -v "$1" >/dev/null 2>&1; }
@@ -26,12 +43,64 @@ die(){ echo; hr; echo "ERROR: $*" >&2; echo "See log: $LOG"; hr; exit 1; }
 
 detect_os(){ source /etc/os-release || true; DISTRO_ID="${ID:-unknown}"; DISTRO_VER="${VERSION_ID:-}"; section "Detected OS: ${DISTRO_ID} ${DISTRO_VER}"; }
 
-install_whiptail(){
+pm_install(){
+    local desc
+    if [[ "$1" =~ [[:space:]:] ]]; then
+        desc="$1"
+        shift
+    else
+        desc="Installing: $*"
+    fi
+
+    case "$DISTRO_ID" in
+        debian|ubuntu) run "${desc}" apt-get install -y "$@" ;;
+        centos|rhel|almalinux|rocky) if have dnf; then run "${desc}" dnf -y install "$@"; else run "${desc}" yum -y install "$@"; fi ;;
+        fedora) run "${desc}" dnf -y install "$@" ;;
+        *) die "Unsupported distro for package install: $DISTRO_ID" ;;
+    esac
+}
+
+pm_update_upgrade(){
+  local full="$1"
+  case "$DISTRO_ID" in
+    debian|ubuntu) 
+      export DEBIAN_FRONTEND=noninteractive
+      run "Updating apt repositories" apt-get update
+      run "Upgrading apt repositories" apt upgrade -y
+      if ((full)); then 
+        run "apt dist-upgrade" apt-get -y dist-upgrade; 
+      fi
+      ;;
+    centos|rhel|almalinux|rocky)
+      if have dnf; then 
+        run "dnf makecache" dnf -y makecache
+        run "dnf upgrade" dnf -y upgrade
+        if ((full)); then 
+          run "dnf dist-upgrade" dnf -y distro-sync
+        fi
+      else 
+        run "yum makecache" yum -y makecache
+        run "yum makecache" yum -y upgrade
+      fi
+      ;;
+    fedora) 
+      run "dnf makecache" dnf -y makecache
+      run "dnf upgrade" dnf -y upgrade
+      if ((full)); then 
+        run "dnf dist-upgrade" dnf -y distro-sync
+      fi
+      ;;
+  esac
+}
+
+install_essentials(){
+  pm_install "Installing essential dependencies" curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file
+
   if have whiptail; then return; fi
   case "$DISTRO_ID" in
-    debian|ubuntu) run "Install whiptail" apt-get update -y; run "Install whiptail" apt-get install -y whiptail ;;
-    centos|rhel|almalinux|rocky) if have dnf; then run "Install newt (whiptail)" dnf -y install newt; else run "Install newt (whiptail)" yum -y install newt; fi ;;
-    fedora) run "Install newt (whiptail)" dnf -y install newt ;;
+    debian|ubuntu) run "Installing whiptail" apt-get install -y whiptail ;;
+    centos|rhel|almalinux|rocky) if have dnf; then run "Installing newt (whiptail)" dnf -y install newt; else run "Installing newt (whiptail)" yum -y install newt; fi ;;
+    fedora) run "Installing newt (whiptail)" dnf -y install newt ;;
     *) die "Cannot install whiptail/newt automatically on $DISTRO_ID" ;;
   esac
 }
@@ -86,9 +155,20 @@ db_collect(){
   DB_NAME=$(whiptail --title "$TITLE" --inputbox "Database Name" 10 70 "${DB_NAME}" 3>&1 1>&2 2>&3) || exit 1
   DB_USER=$(whiptail --title "$TITLE" --inputbox "Database User" 10 70 "${DB_USER}" 3>&1 1>&2 2>&3) || exit 1
   while :; do
-    DB_PASS=$(whiptail --title "$TITLE" --passwordbox "Database Password\n\nUse a strong unique password." 12 70 3>&1 1>&2 2>&3) || exit 1
+    DB_PASS=$(whiptail --title "$TITLE" --passwordbox "Database Password\n\nUse a strong unique password.\n\nLeave empty to auto-generate one." 12 70 3>&1 1>&2 2>&3) || exit 1
+
+    if [[ -z "$DB_PASS" ]]; then
+      DB_PASS=$(openssl rand -hex 16)
+      whiptail --title "$TITLE" --msgbox "No password entered, a secure password was generated for you:\n\n${DB_PASS}\n\nSave it somewhere safe. (it will be written to the .env file)" 14 70
+      break
+    fi
+
     DB_PASS2=$(whiptail --title "$TITLE" --passwordbox "Confirm Password" 12 70 3>&1 1>&2 2>&3) || exit 1
-    [[ "$DB_PASS" == "$DB_PASS2" ]] && break
+
+    if [[ "$DB_PASS" == "$DB_PASS2" ]]; then
+      break
+    fi
+
     whiptail --title "$TITLE" --msgbox "Passwords do not match. Please try again." 10 60
   done
   whiptail --title "$TITLE" --yesno "Database configuration:\n\nHost: ${DB_HOST}\nPort: ${DB_PORT}\nName: ${DB_NAME}\nUser: ${DB_USER}\n\nProceed to create database and user?" 14 70 || exit 1
@@ -115,23 +195,23 @@ FLUSH PRIVILEGES;"
 }
 
 # ---------------- Package Ops ----------------
-pm_update_upgrade(){
-  local full="$1"
-  case "$DISTRO_ID" in
-    debian|ubuntu) export DEBIAN_FRONTEND=noninteractive; run "apt update" apt-get update -y; if ((full)); then run "apt dist-upgrade" apt-get -y dist-upgrade; fi ;;
-    centos|rhel|almalinux|rocky) if have dnf; then run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi; else run "yum makecache" yum -y makecache; if ((full)); then run "yum update" yum -y update; fi; fi ;;
-    fedora) run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi ;;
-  esac
-}
+# pm_update_upgrade(){
+#   local full="$1"
+#   case "$DISTRO_ID" in
+#     debian|ubuntu) export DEBIAN_FRONTEND=noninteractive; run "apt update" apt-get update -y; if ((full)); then run "apt dist-upgrade" apt-get -y dist-upgrade; fi ;;
+#     centos|rhel|almalinux|rocky) if have dnf; then run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi; else run "yum makecache" yum -y makecache; if ((full)); then run "yum update" yum -y update; fi; fi ;;
+#     fedora) run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi ;;
+#   esac
+# }
 
-pm_install(){
-  case "$DISTRO_ID" in
-    debian|ubuntu) run "Install: $*" apt-get install -y "$@" ;;
-    centos|rhel|almalinux|rocky) if have dnf; then run "Install: $*" dnf -y install "$@"; else run "Install: $*" yum -y install "$@"; fi ;;
-    fedora) run "Install: $*" dnf -y install "$@" ;;
-    *) die "Unsupported distro for package install: $DISTRO_ID" ;;
-  esac
-}
+# pm_install(){
+#   case "$DISTRO_ID" in
+#     debian|ubuntu) run "Install: $*" apt-get install --no-install-recommends -y "$@" ;;
+#     centos|rhel|almalinux|rocky) if have dnf; then run "Install: $*" dnf -y install "$@"; else run "Install: $*" yum -y install "$@"; fi ;;
+#     fedora) run "Install: $*" dnf -y install "$@" ;;
+#     *) die "Unsupported distro for package install: $DISTRO_ID" ;;
+#   esac
+# }
 
 enable_php_repo_and_update(){
   case "$DISTRO_ID" in
@@ -161,19 +241,13 @@ enable_php_repo_and_update(){
 install_php_stack(){
   case "$DISTRO_ID" in
     debian|ubuntu)
-      if ! apt-get install -y php php-cli php-fpm php-gd php-mysql php-mbstring php-bcmath php-xml php-curl php-zip; then
-        section "Base repos didn't have PHP meta packages — enabling PHP repo and retrying…"
-        enable_php_repo_and_update
-        pm_install php php-cli php-fpm php-gd php-mysql php-mbstring php-bcmath php-xml php-curl php-zip
-      fi
+      enable_php_repo_and_update
+      run "Install PHP stack (latest available)" apt-get install --no-install-recommends -y php php-cli php-fpm php-gd php-mysql php-mbstring php-bcmath php-xml php-curl php-zip
       ;;
     fedora|centos|rhel|almalinux|rocky)
       if have dnf; then
-        if ! dnf -y install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip; then
-          section "Enabling module/repo for newer PHP and retrying…"
-          enable_php_repo_and_update
-          pm_install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip
-        fi
+        enable_php_repo_and_update
+        run "Install PHP stack (latest available)" dnf -y install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip
       else
         pm_install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip || true
       fi
@@ -204,15 +278,15 @@ install_nodejs_lts(){
 install_webserver(){
   if [[ "$WEB" == "nginx" ]]; then
     pm_install nginx
-  else
-    case "$DISTRO_ID" in
-      debian|ubuntu) pm_install apache2 ;;
-      fedora|centos|rhel|almalinux|rocky) pm_install httpd ;;
-    esac
-    if [[ -d /etc/apache2 ]]; then
-      run "Enable Apache modules" bash -lc "a2enmod proxy proxy_fcgi setenvif rewrite headers expires || true"
-      run "Restart Apache" systemctl restart apache2
-    fi
+  elif [[ "$WEB" == "apache" ]]; then
+      case "$DISTRO_ID" in
+        debian|ubuntu) pm_install apache2 ;;
+        fedora|centos|rhel|almalinux|rocky) pm_install httpd ;;
+      esac
+      if [[ -d /etc/apache2 ]]; then
+        run "Enable Apache modules" bash -lc "a2enmod proxy proxy_fcgi setenvif rewrite headers expires || true"
+        run "Restart Apache" systemctl restart apache2
+      fi
   fi
 }
 
@@ -234,312 +308,6 @@ install_db_engine(){
 
 install_composer(){ run "Install Composer" bash -lc "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"; }
 
-# ---------------- PHP-FPM helpers ----------------
-find_php_fpm_service(){ systemctl list-unit-files --type=service | awk '/php.*-fpm\.service/ {print $1}' | sort -r | head -n1; }
-start_php_fpm(){
-  local svc; svc="$(find_php_fpm_service)"
-  if [[ -n "$svc" ]]; then run "Enable/start ${svc}" systemctl enable --now "$svc"; else run "Enable/start php-fpm (generic)" systemctl enable --now php-fpm || true; fi
-}
-restart_php_fpm(){
-  local svc; svc="$(find_php_fpm_service)"
-  if [[ -n "$svc" ]]; then run "Restart ${svc}" systemctl restart "$svc" || true; else run "Restart php-fpm (generic)" systemctl restart php-fpm || true; fi
-}
-php_fpm_socket(){
-  for s in /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
-    [[ -S "$s" ]] && { echo "unix:$s"; return; }
-  done
-  echo "unix:/run/php/php-fpm.sock"
-}
-
-# ---------------- ionCube ----------------
-php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2"; }
-install_ioncube(){
-  local PHPV ARCH URL TMP TAR SO
-  PHPV="$(php_minor)"
-  case "$(uname -m)" in
-    x86_64) ARCH="x86-64" ;;
-    aarch64|arm64) ARCH="aarch64" ;;
-    *) die "ionCube: unsupported architecture $(uname -m)" ;;
-  esac
-  URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
-  TMP="$(mktemp -d)"; TAR="$TMP/ioncube.tar.gz"
-  run "Download ionCube" curl -fsSL "$URL" -o "$TAR"
-  run "Extract ionCube" tar -xzf "$TAR" -C "$TMP"
-  SO="$TMP/ioncube/ioncube_loader_lin_${PHPV}.so"
-  [[ -f "$SO" ]] || die "ionCube loader for PHP ${PHPV} not found."
-  run "Install ionCube to /usr/local/ioncube" bash -lc "install -d /usr/local/ioncube && install -m 0644 '$SO' /usr/local/ioncube/"
-  local INI="zend_extension=/usr/local/ioncube/ioncube_loader_lin_${PHPV}.so"
-  if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
-    run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
-    [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
-    [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
-  elif [[ -d "/etc/php.d" ]]; then
-    run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
-  fi
-  restart_php_fpm
-}
-
-# ---------------- NGINX layout & config ----------------
-nginx_layout_detect(){
-  NGINX_AVAIL="/etc/nginx/sites-available"
-  NGINX_ENABLED="/etc/nginx/sites-enabled"
-  if [[ -d "$NGINX_AVAIL" && -d "$NGINX_ENABLED" ]]; then
-    NGINX_MODE="debian"
-    NGINX_CONF_PATH="$NGINX_AVAIL/dezerx.conf"
-  else
-    NGINX_MODE="rhel"
-    NGINX_CONF_PATH="/etc/nginx/conf.d/dezerx.conf"
-  fi
-  section "NGINX layout: ${NGINX_MODE} (conf: ${NGINX_CONF_PATH})"
-}
-
-nginx_remove_defaults(){
-  [[ -f /etc/nginx/sites-available/default ]] && run "Remove default NGINX (sites-available)" rm -f /etc/nginx/sites-available/default
-  [[ -f /etc/nginx/sites-enabled/default   ]] && run "Remove default NGINX (sites-enabled)"   rm -f /etc/nginx/sites-enabled/default
-  [[ -f /etc/nginx/conf.d/default.conf     ]] && run "Remove default NGINX (conf.d/default.conf)" rm -f /etc/nginx/conf.d/default.conf
-}
-
-nginx_enable_site(){
-  if [[ "$NGINX_MODE" == "debian" ]]; then
-    ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/dezerx.conf"
-  fi
-}
-
-configure_nginx_http_only(){
-  local sock; sock="$(php_fpm_socket)"
-  nginx_layout_detect
-  nginx_remove_defaults
-  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-
-    root ${APP_DIR}/public;
-    index index.php index.html;
-
-    access_log /var/log/nginx/dezerx.app-access.log;
-    error_log  /var/log/nginx/dezerx.app-error.log error;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-        fastcgi_pass ${sock};
-        fastcgi_index index.php;
-        include fastcgi_params;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_param HTTP_PROXY \"\";
-        fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
-        fastcgi_connect_timeout 300;
-        fastcgi_send_timeout 300;
-        fastcgi_read_timeout 300;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF"
-  [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
-  start_php_fpm
-  run "Test nginx configuration" nginx -t
-  run "Enable/start nginx" systemctl enable --now nginx
-  run "Restart nginx" systemctl restart nginx
-}
-
-configure_nginx_ssl(){
-  local sock; sock="$(php_fpm_socket)"
-  nginx_layout_detect
-  nginx_remove_defaults
-  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    return 301 https://\$server_name\$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN};
-
-    root ${APP_DIR}/public;
-    index index.php index.html;
-
-    access_log /var/log/nginx/dezerx.app-access.log;
-    error_log  /var/log/nginx/dezerx.app-error.log error;
-
-    client_max_body_size 100m;
-    client_body_timeout 120s;
-
-    sendfile off;
-
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    ssl_session_cache shared:SSL:10m;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
-    ssl_prefer_server_ciphers on;
-
-    add_header X-Content-Type-Options nosniff;
-    add_header X-XSS-Protection "1; mode=block";
-    add_header X-Robots-Tag none;
-    add_header Content-Security-Policy "frame-ancestors 'self'";
-    add_header X-Frame-Options DENY;
-    add_header Referrer-Policy same-origin;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
-    }
-
-    location ~ \.php\$ {
-        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-        fastcgi_pass ${sock};
-        fastcgi_index index.php;
-        fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_param HTTP_PROXY "";
-        fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
-        fastcgi_connect_timeout 300;
-        fastcgi_send_timeout 300;
-        fastcgi_read_timeout 300;
-        include /etc/nginx/fastcgi_params;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF"
-  [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
-  start_php_fpm
-  run "Test nginx configuration" nginx -t
-  run "Restart nginx" systemctl restart nginx
-}
-
-# ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
-ensure_app_dir(){ run "Ensure app directory ${APP_DIR}" bash -lc "mkdir -p '${APP_DIR}/public'"; }
-
-env_write_value(){
-  local key="$1" val="$2"
-  if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
-    run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
-  else
-    run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
-  fi
-}
-
-detect_web_user_group(){
-  APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
-  if [[ "$WEB" == "nginx" ]]; then
-    id nginx >/dev/null 2>&1 && { APP_USER="nginx"; APP_GROUP="nginx"; } || \
-    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
-  else
-    id apache >/dev/null 2>&1 && { APP_USER="apache"; APP_GROUP="apache"; } || \
-    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
-  fi
-  section "Using web user/group: ${APP_USER}:${APP_GROUP}"
-}
-
-app_env_setup(){
-  if [[ ! -f "${APP_DIR}/.env" && -f "${APP_DIR}/.env.example" ]]; then
-    run "Copy .env.example -> .env" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
-  elif [[ ! -f "${APP_DIR}/.env" ]]; then
-    run "Create empty .env" touch "${APP_DIR}/.env"
-  fi
-  env_write_value "APP_NAME" "\"DezerX Spartan\""
-  env_write_value "APP_ENV" "production"
-  env_write_value "APP_KEY" ""
-  env_write_value "APP_DEBUG" "false"
-  env_write_value "APP_URL" "http://${DOMAIN}"
-  env_write_value "DB_CONNECTION" "mysql"
-  env_write_value "DB_HOST" "${DB_HOST}"
-  env_write_value "DB_PORT" "${DB_PORT}"
-  env_write_value "DB_DATABASE" "${DB_NAME}"
-  env_write_value "DB_USERNAME" "${DB_USER}"
-  env_write_value "DB_PASSWORD" "${DB_PASS}"
-}
-
-app_install_steps(){
-  [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader -n --prefer-dist"
-  [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-  [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
-  run "artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
-  run "artisan migrate --seed" bash -lc "cd '${APP_DIR}' && php artisan migrate --seed --force || true"
-}
-
-apply_permissions(){
-  detect_web_user_group
-  run "Set ownership to ${APP_USER}:${APP_GROUP}" chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
-  run "Set permissions 755" chmod -R 755 "${APP_DIR}"
-  [[ -d "${APP_DIR}/storage" ]] && run "storage perms" chmod -R ug+rwX "${APP_DIR}/storage" || true
-  [[ -d "${APP_DIR}/bootstrap/cache" ]] && run "bootstrap/cache perms" chmod -R ug+rwX "${APP_DIR}/bootstrap/cache" || true
-}
-
-setup_cron(){
-  local cron_line="* * * * * cd ${APP_DIR} && php artisan schedule:run >> /dev/null 2>&1"
-  run "Install cron for scheduler" bash -lc "(crontab -l 2>/dev/null | grep -v -F \"${cron_line}\"; echo \"${cron_line}\") | crontab -"
-}
-
-setup_systemd_queue(){
-  detect_web_user_group
-  local svc="/etc/systemd/system/dezerx.service"
-  run "Create systemd service dezerx.service" bash -lc "cat >'$svc' <<EOF
-[Unit]
-Description=Laravel Queue Worker for DezerX
-After=network.target
-
-[Service]
-User=${APP_USER}
-Group=${APP_GROUP}
-WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/php ${APP_DIR}/artisan queue:work --queue=critical,high,medium,default,low --sleep=3 --tries=3
-Restart=always
-RestartSec=5
-StartLimitBurst=3
-StartLimitIntervalSec=60
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=dezerx-worker
-
-[Install]
-WantedBy=multi-user.target
-EOF"
-  run "Enable & start dezerx.service" bash -lc "systemctl daemon-reload && systemctl enable dezerx.service && systemctl start dezerx.service || true"
-}
-
-# ---------------- Certbot ----------------
-ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" 10 70; }
-
-install_certbot_pkgs(){
-  case "$DISTRO_ID" in
-    debian|ubuntu)
-      if [[ "$WEB" == "nginx" ]]; then 
-        pm_install certbot python3-certbot-nginx
-      else 
-        pm_install certbot python3-certbot-apache
-      fi
-      ;;
-    fedora|centos|rhel|almalinux|rocky)
-      if [[ "$WEB" == "nginx" ]]; then 
-        pm_install certbot python3-certbot-nginx || pm_install certbot || true
-      else 
-        pm_install certbot python3-certbot-apache || pm_install certbot || true
-      fi
-      ;;
-  esac
-}
-
-run_certbot_webroot(){
-  run "Obtain certificate for ${DOMAIN} (webroot: ${APP_DIR}/public)" \
-    bash -lc "certbot certonly --non-interactive --agree-tos -m admin@${DOMAIN} --webroot -w '${APP_DIR}/public' -d '${DOMAIN}' || true"
-}
-
 # ---------------- License & Download ----------------
 LICENSE_KEY=""
 PRODUCT_ID=""
@@ -548,36 +316,29 @@ PRODUCT_NAME=""
 ask_license_key(){
   while :; do
     LICENSE_KEY=$(whiptail --title "$TITLE" --passwordbox "Enter your DezerX Spartan license key" 10 70 3>&1 1>&2 2>&3) || exit 1
-    [[ -n "$LICENSE_KEY" ]] || { whiptail --title "$TITLE" --msgbox "License key is required." 8 50; continue; }
+    if [[ -z "$LICENSE_KEY" ]]; then
+      whiptail --title "$TITLE" --msgbox "License key is required." 8 50
+      continue
+    fi
+
+    if [[ "$LICENSE_KEY" == SPARTANSTARTER_* ]]; then
+      PRODUCT_ID="1"
+      PRODUCT_NAME="Spartan Starter"
+    elif [[ "$LICENSE_KEY" == SPARTANPROFESSIONAL_* ]]; then
+      PRODUCT_ID="5"
+      PRODUCT_NAME="Spartan Professional"
+    elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
+      PRODUCT_ID="6"
+      PRODUCT_NAME="Spartan Ultimate"
+    else
+      whiptail --title "$TITLE" --msgbox "Invalid license key. Please try again." 8 50
+      continue
+    fi
+
     local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     whiptail --title "$TITLE" --yesno "Use this license key?\n\n${masked}\n\nDomain: ${DOMAIN}" 12 70 && break
   done
   section "License key captured (masked)."
-}
-
-choose_product(){
-  PRODUCT_ID=$(whiptail --title "$TITLE" --radiolist "Select your DezerX Spartan product" 15 70 3 \
-    "1" "Spartan Starter" ON \
-    "5" "Spartan Professional" OFF \
-    "6" "Spartan Ultimate" OFF \
-    3>&1 1>&2 2>&3) || exit 1
-  
-  case "$PRODUCT_ID" in
-    "1") PRODUCT_NAME="Spartan Starter" ;;
-    "5") PRODUCT_NAME="Spartan Professional" ;;
-    "6") PRODUCT_NAME="Spartan Ultimate" ;;
-    *) die "Invalid product selection" ;;
-  esac
-  
-  section "Selected product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
-}
-
-install_download_tools(){
-  case "$DISTRO_ID" in
-    debian|ubuntu) pm_install curl jq unzip rsync tar file ;;
-    fedora|centos|rhel|almalinux|rocky) pm_install curl jq unzip rsync tar file ;;
-    *) pm_install curl jq unzip rsync tar file || true ;;
-  esac
 }
 
 license_verify(){
@@ -684,6 +445,331 @@ license_download_and_extract(){
   echo "App synced to ${APP_DIR}"
 }
 
+# ---------------- PHP-FPM helpers ----------------
+find_php_fpm_service(){ systemctl list-unit-files --type=service | awk '/php.*-fpm\.service/ {print $1}' | sort -r | head -n1; }
+start_php_fpm(){
+  local svc; svc="$(find_php_fpm_service)"
+  if [[ -n "$svc" ]]; then run "Enable/start ${svc}" systemctl enable --now "$svc"; else run "Enable/start php-fpm (generic)" systemctl enable --now php-fpm || true; fi
+}
+restart_php_fpm(){
+  local svc; svc="$(find_php_fpm_service)"
+  if [[ -n "$svc" ]]; then run "Restart ${svc}" systemctl restart "$svc" || true; else run "Restart php-fpm (generic)" systemctl restart php-fpm || true; fi
+}
+php_fpm_socket(){
+  for s in /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
+    [[ -S "$s" ]] && { echo "unix:$s"; return; }
+  done
+  echo "unix:/run/php/php-fpm.sock"
+}
+
+# ---------------- ionCube ----------------
+php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2"; }
+install_ioncube(){
+  local PHPV ARCH URL TMP TAR SO
+  PHPV="$(php_minor)"
+  case "$(uname -m)" in
+    x86_64) ARCH="x86-64" ;;
+    aarch64|arm64) ARCH="aarch64" ;;
+    *) die "ionCube: unsupported architecture $(uname -m)" ;;
+  esac
+  URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
+  TMP="$(mktemp -d)"; TAR="$TMP/ioncube.tar.gz"
+  run "Download ionCube" curl -fsSL "$URL" -o "$TAR"
+  run "Extract ionCube" tar -xzf "$TAR" -C "$TMP"
+  SO="$TMP/ioncube/ioncube_loader_lin_${PHPV}.so"
+  [[ -f "$SO" ]] || die "ionCube loader for PHP ${PHPV} not found."
+  run "Install ionCube to /usr/local/ioncube" bash -lc "install -d /usr/local/ioncube && install -m 0644 '$SO' /usr/local/ioncube/"
+  local INI="zend_extension=/usr/local/ioncube/ioncube_loader_lin_${PHPV}.so"
+  if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
+    run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
+    [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
+    [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
+  elif [[ -d "/etc/php.d" ]]; then
+    run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
+  fi
+  restart_php_fpm
+}
+
+# ---------------- NGINX layout & config ----------------
+nginx_layout_detect(){
+  NGINX_AVAIL="/etc/nginx/sites-available"
+  NGINX_ENABLED="/etc/nginx/sites-enabled"
+  if [[ -d "$NGINX_AVAIL" && -d "$NGINX_ENABLED" ]]; then
+    NGINX_MODE="debian"
+    NGINX_CONF_PATH="$NGINX_AVAIL/dezerx.conf"
+  else
+    NGINX_MODE="rhel"
+    NGINX_CONF_PATH="/etc/nginx/conf.d/dezerx.conf"
+  fi
+  section "NGINX layout: ${NGINX_MODE} (conf: ${NGINX_CONF_PATH})"
+}
+
+nginx_remove_defaults(){
+    local avail="/etc/nginx/sites-available/default"
+    local enabled="/etc/nginx/sites-enabled/default"
+    local confd="/etc/nginx/conf.d/default.conf"
+
+    for f in "$avail" "$enabled" "$confd"; do
+        if [[ -e "$f" || -L "$f" ]]; then
+            run "Removed default NGINX conf ($f)" rm -f "$f"
+        fi
+    done
+}
+
+nginx_enable_site(){
+  if [[ "$NGINX_MODE" == "debian" ]]; then
+    run "Enable site (symlink)" ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/dezerx.conf"
+  fi
+}
+
+configure_nginx_http_only(){
+  local sock; sock="$(php_fpm_socket)"
+  nginx_layout_detect
+  nginx_remove_defaults
+  
+  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
+server {
+    listen 80;
+    server_name ${DOMAIN};
+
+    root ${APP_DIR}/public;
+    index index.php index.html;
+
+    access_log /var/log/nginx/dezerx.app-access.log;
+    error_log  /var/log/nginx/dezerx.app-error.log error;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass ${sock};
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY \"\";
+        fastcgi_intercept_errors off;
+        fastcgi_buffer_size 16k;
+        fastcgi_buffers 4 16k;
+        fastcgi_connect_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF"
+  nginx_enable_site
+  start_php_fpm
+  run "Test nginx configuration" nginx -t
+  run "Enable/start nginx" systemctl enable --now nginx
+  run "Restart nginx" systemctl restart nginx
+}
+
+configure_nginx_ssl(){
+  local sock; sock="$(php_fpm_socket)"
+  nginx_layout_detect
+  nginx_remove_defaults
+  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
+
+    root ${APP_DIR}/public;
+    index index.php index.html;
+
+    access_log /var/log/nginx/dezerx.app-access.log;
+    error_log  /var/log/nginx/dezerx.app-error.log error;
+
+    client_max_body_size 100m;
+    client_body_timeout 120s;
+
+    sendfile off;
+
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+    ssl_prefer_server_ciphers on;
+
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection \"1; mode=block\";
+    add_header X-Robots-Tag none;
+    add_header Content-Security-Policy \"frame-ancestors 'self'\";
+    add_header X-Frame-Options DENY;
+    add_header Referrer-Policy same-origin;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \.php\$ {
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass ${sock};
+        fastcgi_index index.php;
+        fastcgi_param PHP_VALUE \"upload_max_filesize = 100M post_max_size=100M\";
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param HTTP_PROXY \"\";
+        fastcgi_intercept_errors off;
+        fastcgi_buffer_size 16k;
+        fastcgi_buffers 4 16k;
+        fastcgi_connect_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_read_timeout 300;
+        include /etc/nginx/fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF"
+  [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
+  start_php_fpm
+  run "Test nginx configuration" nginx -t
+  run "Restart nginx" systemctl restart nginx
+}
+
+# ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
+ensure_app_dir(){ run "Ensure app directory ${APP_DIR}" bash -lc "mkdir -p '${APP_DIR}/public'"; }
+
+env_write_value(){
+  local key="$1" val="$2"
+  if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
+    run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
+  else
+    run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
+  fi
+}
+
+detect_web_user_group(){
+  APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
+  if [[ "$WEB" == "nginx" ]]; then
+    id nginx >/dev/null 2>&1 && { APP_USER="nginx"; APP_GROUP="nginx"; } || \
+    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
+  else
+    id apache >/dev/null 2>&1 && { APP_USER="apache"; APP_GROUP="apache"; } || \
+    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
+  fi
+  section "Using web user/group: ${APP_USER}:${APP_GROUP}"
+}
+
+app_env_setup(){
+  if [[ ! -f "${APP_DIR}/.env" && -f "${APP_DIR}/.env.example" ]]; then
+    run "Copy .env.example -> .env" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
+
+    local envfile="${APP_DIR}/.env"
+    local lines=""
+    lines=$(wc -l "${envfile}" 2>/dev/null || echo 0)
+    if (( lines > 4 )); then
+      run "Removing the last 4 lines of the .env" bash -lc "head -n -4 '${envfile}' > '${envfile}.tmp' && mv -f '${envfile}.tmp' '${envfile}'"
+    fi
+
+  elif [[ ! -f "${APP_DIR}/.env" ]]; then
+    run "Create empty .env" touch "${APP_DIR}/.env"
+  fi
+
+  env_write_value "APP_NAME" "\"DezerX Spartan\""
+  env_write_value "APP_ENV" "production"
+  env_write_value "APP_KEY" ""
+  env_write_value "APP_DEBUG" "false"
+  env_write_value "APP_URL" "http://${DOMAIN}"
+  env_write_value "LICENSE_KEY" "${LICENSE_KEY}"
+  env_write_value "PRODUCT_ID" "${PRODUCT_ID}"
+  env_write_value "DB_CONNECTION" "mysql"
+  env_write_value "DB_HOST" "${DB_HOST}"
+  env_write_value "DB_PORT" "${DB_PORT}"
+  env_write_value "DB_DATABASE" "${DB_NAME}"
+  env_write_value "DB_USERNAME" "${DB_USER}"
+  env_write_value "DB_PASSWORD" "${DB_PASS}"
+}
+
+app_install_steps(){
+  [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader -n --prefer-dist"
+  [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
+  [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
+  run "artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
+  run "artisan migrate --seed" bash -lc "cd '${APP_DIR}' && php artisan migrate --seed --force || true"
+}
+
+apply_permissions(){
+  detect_web_user_group
+  run "Set ownership to ${APP_USER}:${APP_GROUP}" chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
+  run "Set permissions 755" chmod -R 755 "${APP_DIR}"
+  [[ -d "${APP_DIR}/storage" ]] && run "storage perms" chmod -R ug+rwX "${APP_DIR}/storage" || true
+  [[ -d "${APP_DIR}/bootstrap/cache" ]] && run "bootstrap/cache perms" chmod -R ug+rwX "${APP_DIR}/bootstrap/cache" || true
+}
+
+setup_cron(){
+  local cron_line="* * * * * cd ${APP_DIR} && php artisan schedule:run >> /dev/null 2>&1"
+  run "Install cron for scheduler" bash -lc "(crontab -l 2>/dev/null | grep -v -F \"${cron_line}\"; echo \"${cron_line}\") | crontab -"
+}
+
+setup_systemd_queue(){
+  detect_web_user_group
+  local svc="/etc/systemd/system/dezerx.service"
+  run "Create systemd service dezerx.service" bash -lc "cat >'$svc' <<EOF
+[Unit]
+Description=Laravel Queue Worker for DezerX
+After=network.target
+
+[Service]
+User=${APP_USER}
+Group=${APP_GROUP}
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/bin/php ${APP_DIR}/artisan queue:work --queue=critical,high,medium,default,low --sleep=3 --tries=3
+Restart=always
+RestartSec=5
+StartLimitBurst=3
+StartLimitIntervalSec=60
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=dezerx-worker
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+  run "Enable & start dezerx.service" bash -lc "systemctl daemon-reload && systemctl enable dezerx.service && systemctl start dezerx.service || true"
+}
+
+# ---------------- Certbot ----------------
+ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" 10 70; }
+
+install_certbot_pkgs(){
+  case "$DISTRO_ID" in
+    debian|ubuntu)
+      if [[ "$WEB" == "nginx" ]]; then 
+        pm_install certbot python3-certbot-nginx
+      else 
+        pm_install certbot python3-certbot-apache
+      fi
+      ;;
+    fedora|centos|rhel|almalinux|rocky)
+      if [[ "$WEB" == "nginx" ]]; then 
+        pm_install certbot python3-certbot-nginx || pm_install certbot || true
+      else 
+        pm_install certbot python3-certbot-apache || pm_install certbot || true
+      fi
+      ;;
+  esac
+}
+
+run_certbot_webroot(){
+  run "Obtain certificate for ${DOMAIN} (webroot: ${APP_DIR}/public)" \
+    bash -lc "certbot certonly --non-interactive --agree-tos -m admin@${DOMAIN} --webroot -w '${APP_DIR}/public' -d '${DOMAIN}' || true"
+}
+
+
 # ---- HTTPS flip after certbot ----
 flip_app_url_to_https(){
   if [[ -f "${APP_DIR}/.env" ]]; then
@@ -699,10 +785,12 @@ flip_app_url_to_https(){
 # ---------------- Flow ----------------
 need_root
 detect_os
-install_whiptail
+pm_update_upgrade 0
+install_essentials
 
 main_menu || { echo "Installation cancelled."; exit 0; }
 ask_domain
+ask_license_key
 ask_app_dir
 choose_webserver
 choose_ioncube
@@ -727,11 +815,8 @@ Proceed with installation (live output)?" 22 72 || exit 1
 
 # Update caches early and ensure download tooling
 pm_update_upgrade 0
-install_download_tools
 
-# License: ask key -> choose product -> verify -> download -> extract to APP_DIR
-ask_license_key
-choose_product
+# License part
 license_verify
 license_download_and_extract
 
