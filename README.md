@@ -2,9 +2,16 @@
 
 Official Repo for DezerX Spartan Installer
 
-## Overview
+## Description
 
 The DezerX Spartan Installer is an interactive Bash script designed to automate the deployment of the DezerX Spartan web application. It supports major Linux distributions including Ubuntu, Debian, CentOS, RHEL, AlmaLinux, Rocky, and Fedora.
+
+## Chapters
+
+- [Features](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Features)
+- [Requirements](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Requirements)
+- [How to install](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#How-To-install)
+- [Troubleshooting](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Troubleshooting)
 
 ## Features
 
@@ -16,12 +23,30 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 - Systemd service for Laravel queue worker
 - Cron job setup for scheduled tasks
 
-## Usage
+## Requirements
+
+- Linux server (Ubuntu/Debian/CentOS/RHEL/AlmaLinux/Rocky/Fedora)
+- Root privileges
+- Internet connectivity
+
+## How To Install
+
+### One line (Recomanded)
+
+1. **Copy & Paste the command**
+   ```bash
+   curl -fsSL https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer/releases/latest/download/spartan_installer.sh | sudo bash
+   ```
+
+2. **Follow the interactive prompts to complete the installation.**
+
+
+### Manualy
 
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/your-org/Spartan-Installer.git
+   git clone https://github.comDezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer.git
    cd Spartan-Installer
    ```
 
@@ -33,11 +58,6 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 3. **Follow the interactive prompts to complete the installation.**
 
-## Requirements
-
-- Linux server (Ubuntu/Debian/CentOS/RHEL/AlmaLinux/Rocky/Fedora)
-- Root privileges
-- Internet connectivity
 
 ## Troubleshooting
 
