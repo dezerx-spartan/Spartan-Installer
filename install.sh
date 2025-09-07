@@ -669,7 +669,7 @@ app_env_setup(){
     run "Copy .env.example -> .env" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
 
     local envfile="${APP_DIR}/.env"
-    local lines=""
+    local lines=0
     lines=$(wc -l "${envfile}" 2>/dev/null || echo 0)
     if (( lines > 4 )); then
       run "Removing the last 4 lines of the .env" bash -lc "head -n -4 '${envfile}' > '${envfile}.tmp' && mv -f '${envfile}.tmp' '${envfile}'"
