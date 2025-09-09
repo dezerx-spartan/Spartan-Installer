@@ -197,23 +197,6 @@ FLUSH PRIVILEGES;"
 }
 
 # ---------------- Package Ops ----------------
-# pm_update_upgrade(){
-#   local full="$1"
-#   case "$DISTRO_ID" in
-#     debian|ubuntu) export DEBIAN_FRONTEND=noninteractive; run "apt update" apt-get update -y; if ((full)); then run "apt dist-upgrade" apt-get -y dist-upgrade; fi ;;
-#     centos|rhel|almalinux|rocky) if have dnf; then run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi; else run "yum makecache" yum -y makecache; if ((full)); then run "yum update" yum -y update; fi; fi ;;
-#     fedora) run "dnf makecache" dnf -y makecache; if ((full)); then run "dnf upgrade" dnf -y upgrade; fi ;;
-#   esac
-# }
-
-# pm_install(){
-#   case "$DISTRO_ID" in
-#     debian|ubuntu) run "Install: $*" apt-get install --no-install-recommends -y "$@" ;;
-#     centos|rhel|almalinux|rocky) if have dnf; then run "Install: $*" dnf -y install "$@"; else run "Install: $*" yum -y install "$@"; fi ;;
-#     fedora) run "Install: $*" dnf -y install "$@" ;;
-#     *) die "Unsupported distro for package install: $DISTRO_ID" ;;
-#   esac
-# }
 
 enable_php_repo_and_update(){
   case "$DISTRO_ID" in
