@@ -66,7 +66,7 @@ pm_update_upgrade(){
     debian|ubuntu) 
       export DEBIAN_FRONTEND=noninteractive
       run "Updating apt repositories" apt-get update
-      run "Upgrading apt repositories" apt upgrade -y
+      run "Upgrading apt repositories" apt-get upgrade -y
       if ((full)); then 
         run "apt dist-upgrade" apt-get -y dist-upgrade; 
       fi
@@ -624,7 +624,7 @@ server {
         fastcgi_split_path_info ^(.+\.php)(/.+)\$;
         fastcgi_pass ${sock};
         fastcgi_index index.php;
-        fastcgi_param PHP_VALUE \"upload_max_filesize = 100M post_max_size=100M\";
+        fastcgi_param PHP_VALUE \"upload_max_filesize=100M \\n post_max_size=100M \\n max_execution_time=300\";
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
