@@ -106,7 +106,9 @@ install_essentials(){
 }
 
 # ---------------- Menüs ----------------
-main_menu(){ whiptail --title "$TITLE" --yesno "Welcome to the DezerX Spartan installer.\n\nProceed with installation?" 12 70; }
+main_menu(){
+  whiptail --title "$TITLE" --yesno "Welcome to the DezerX Spartan installer.\n\nProceed with installation?" 12 70 3>&1 1>&2 2>&3
+}
 
 ask_domain(){
   while :; do
