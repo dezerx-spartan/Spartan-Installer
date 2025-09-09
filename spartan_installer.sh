@@ -693,6 +693,7 @@ app_install_steps(){
   [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
   run "artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
   run "artisan migrate --seed" bash -lc "cd '${APP_DIR}' && php artisan migrate --seed --force || true"
+  run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link || true"
 }
 
 apply_permissions(){
