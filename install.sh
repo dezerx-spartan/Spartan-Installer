@@ -94,7 +94,7 @@ pm_update_upgrade(){
 }
 
 install_essentials(){
-  pm_install "Installing essential dependencies" curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file
+  pm_install "Installing essential dependencies" curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl
 
   if have whiptail; then return; fi
   case "$DISTRO_ID" in
@@ -306,7 +306,14 @@ install_db_engine(){
   have mysql || pm_install mariadb-client || pm_install mysql-client || true
 }
 
-install_composer(){ run "Install Composer" bash -lc "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"; }
+install_composer(){
+  run "Install Composer" bash -lc "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
+  run "Verifying if Composer is accessible" bash -lc "if ! command -v composer >/dev/null 2>&1; then ln -sf /usr/local/bin/composer /usr/bin/composer || true; fi"
+  if ! command -v composer 2>&1; then
+    run "Creating a symlink to /usr/local/bin/composer -> /usr/bin/composer"
+    ln -sf /usr/local/bin/composer /usr/bin/composer || true
+  fi
+}
 
 # ---------------- License & Download ----------------
 LICENSE_KEY=""
@@ -695,7 +702,8 @@ app_env_setup(){
 }
 
 app_install_steps(){
-  [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader -n --prefer-dist"
+  COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
+  [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
   [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
   [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
   run "artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
@@ -859,9 +867,8 @@ echo "DocumentRoot: ${APP_DIR}/public"
 echo "Web server:   ${WEB}"
 echo "DB engine:    ${DB_ENGINE}"
 echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
-php -v | grep -qi ioncube && echo "ionCube:     enabled" || echo "ionCube:     not detected"
+php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
 echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-echo "DB pass in:   ${APP_DIR}/.env"
 echo "Log:          ${LOG}"
 hr
 echo "Useful:"
@@ -871,4 +878,3 @@ echo " crontab -l"
 echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
 hr
 exit 0
-
