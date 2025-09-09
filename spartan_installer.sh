@@ -269,6 +269,7 @@ install_webserver(){
         fedora|centos|rhel|almalinux|rocky) pm_install httpd ;;
       esac
       if [[ -d /etc/apache2 ]]; then
+      # Who the fuck uses apache2
         run "Enable Apache modules" bash -lc "a2enmod proxy proxy_fcgi setenvif rewrite headers expires || true"
         run "Restart Apache" systemctl restart apache2
       fi
@@ -483,6 +484,7 @@ install_ioncube(){
 }
 
 # ---------------- NGINX layout & config ----------------
+# reproduce with apache to make nginx
 nginx_layout_detect(){
   NGINX_AVAIL="/etc/nginx/sites-available"
   NGINX_ENABLED="/etc/nginx/sites-enabled"
@@ -554,6 +556,7 @@ server {
     }
 }
 EOF"
+# fuck nginx
   nginx_enable_site
   start_php_fpm
   run "Test nginx configuration" nginx -t
@@ -845,7 +848,7 @@ else
   fi
 fi
 
-section "All done!"
+section "All done, good fuckery!!"
 echo "Domain:       ${DOMAIN}"
 echo "App Path:     ${APP_DIR}"
 echo "DocumentRoot: ${APP_DIR}/public"
