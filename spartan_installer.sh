@@ -1160,7 +1160,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     fi
     
     # Validate required environment variables
-    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" ]]; then
+    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
         echo "Error: Missing required configuration from .env file."
         exit 1
     fi
