@@ -873,10 +873,16 @@ app_install_steps(){
 
 app_update_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
+    if [[ -f "${APP_DIR}/artisan" ]]; then
+        run "artisan down (maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan down || true"
+    fi
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
     run "artisan migrate" bash -lc "cd '${APP_DIR}' && php artisan migrate || true"
+    if [[ -f "${APP_DIR}/artisan" ]]; then
+        run "artisan up (end maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan up || true"
+    fi
 }
 
 apply_permissions(){
