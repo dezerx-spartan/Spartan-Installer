@@ -857,13 +857,13 @@ app_get_variables() {
         DB_NAME=$(grep -E '^DB_DATABASE=' "$envfile" | cut -d'=' -f2 || echo "dezerx")
         DB_USER=$(grep -E '^DB_USERNAME=' "$envfile" | cut -d'=' -f2 || echo "dezer")
         DB_PASS=$(grep -E '^DB_PASSWORD=' "$envfile" | cut -d'=' -f2 || echo "")
-
+        
         if systemctl is-active --quiet nginx 2>/dev/null; then
-           WEB="nginx"
-        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+            WEB="nginx"
+            elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
             WEB="apache"
         else
-           die "No supported web server detected (nginx or apache)."
+            die "No supported web server detected (nginx or apache)."
         fi
         
         section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
@@ -1153,6 +1153,18 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # Get all needed variables
     app_get_variables
     
+    # Validate APP_DIR exists
+    if [[ ! -d "$APP_DIR" ]]; then
+        echo "Error: Application directory $APP_DIR does not exist."
+        exit 1
+    fi
+    
+    # Validate required environment variables
+    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" ]]; then
+        echo "Error: Missing required configuration from .env file."
+        exit 1
+    fi
+    
     # Backup app
     create_backup
     create_db_backup
@@ -1169,7 +1181,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         if [[ "$WEB" == "nginx" ]]; then
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
-        elif [[ "$WEB" == "apache" ]]; then
+            elif [[ "$WEB" == "apache" ]]; then
             run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
         else
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
