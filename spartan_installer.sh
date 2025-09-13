@@ -156,7 +156,8 @@ start_service(){
 main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
         "install" "Install DezerX Spartan" \
-    "update" "Update DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+        "update" "Update DezerX Spartan" \
+    "delete" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
 }
 
 ask_domain(){
@@ -1172,7 +1173,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # License part
     license_verify
     license_download_and_extract
-
+    
     detect_web_user_group
     
     # Install and set perms
@@ -1215,4 +1216,22 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # Cleanup old backups
     cleanup_old_backups
     exit 0
+    
+    elif [[ "$CHOICE" == "delete" ]]; then
+    # Get all needed variables
+    app_get_variables
+    
+    validate_variables
+    
+    whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
+    if [[ -d "$APP_DIR" ]]; then
+        run "Remove application directory ${APP_DIR}" rm -rf "$APP_DIR"
+        echo "Application at ${APP_DIR} has been deleted."
+        echo "Note: Database and backups are NOT deleted."
+        exit 0
+    else
+        die "Application directory ${APP_DIR} does not exist."
+    fi
+else
+    echo "No valid choice made, exiting."
 fi
