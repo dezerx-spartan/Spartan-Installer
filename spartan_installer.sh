@@ -1030,10 +1030,14 @@ restore_backup() {
 }
 
 restore_db_backup() {
-    if [[ -f "$DB_BACKUP_FILE" && "$DB_ENGINE" == "mysql" ]]; then
-        section "Restoring database backup from ${DB_BACKUP_FILE}"
-        gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
-        echo "Database backup restored successfully."
+    if [[ -f "$DB_BACKUP_FILE" ]]; then
+        if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
+            section "Restoring database backup from ${DB_BACKUP_FILE}"
+            gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
+            echo "Database backup restored successfully."
+        else
+            die "Unsupported database engine: ${DB_ENGINE}"
+        fi
     else
         die "No database backup file found to restore."
     fi
