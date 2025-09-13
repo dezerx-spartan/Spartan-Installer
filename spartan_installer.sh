@@ -1005,8 +1005,8 @@ create_db_backup() {
         mkdir -p "$(dirname "$DB_BACKUP_FILE")"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
-
-    elif [[ "$DB_ENGINE" == "mariadb" ]]; then
+        
+        elif [[ "$DB_ENGINE" == "mariadb" ]]; then
         local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
         DB_BACKUP_FILE="${backup_dir}.sql.gz"
         
