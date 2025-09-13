@@ -1164,11 +1164,13 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
         echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
         hr
-        exit 0
     else
         restore_backup
         restore_db_backup
         die "Update failed, backup restored."
-        cleanup_old_backups
     fi
+    
+    # Cleanup old backups
+    cleanup_old_backups
+    exit 0
 fi
