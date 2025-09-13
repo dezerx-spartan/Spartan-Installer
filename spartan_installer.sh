@@ -100,11 +100,8 @@ install_essentials(){
     debian|ubuntu) 
       pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps)
       ;;
-    centos|rhel|almalinux|rocky) 
-      pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps)
-      ;;
-    fedora) 
-      pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps)
+    fedora|centos|rhel|almalinux|rocky) 
+      pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie)
       ;;
     *) die "Distro not supported $DISTRO_ID" ;;
   esac
@@ -118,6 +115,41 @@ install_essentials(){
   fi
 
   pm_install "Installing essential dependencies" "${pkgs[@]}"
+}
+
+is_systemd() {
+  [[ -d /run/systemd/system ]] && return 0
+  local p1
+  p1="$(ps -p 1 -o comm= 2>/dev/null || true)"
+  [[ "$p1" = "systemd" ]] && return 0
+  return 1
+}
+
+start_service(){
+  local svc="$1"
+
+  if is_systemd && have systemctl >/dev/null 2>&1; then
+    section "Attempting to start ${svc} via systemctl"
+    if systemctl enable --now "$svc" >/dev/null 2>&1 || systemctl start "$svc" >/dev/null 2>&1
+      return 0
+    fi
+  fi
+
+  if have rc-service >/dev/null 2>&1; then
+    section "Attempting to start ${svc} via rc-servic"
+    if rc-service "$svc" start >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  if have service >/dev/null 2>&1; then
+    section "Attempting to start ${svc} via service"
+    if service "$svc" start >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  return 1
 }
 
 # ---------------- Menüs ----------------
@@ -773,9 +805,30 @@ apply_permissions(){
   [[ -d "${APP_DIR}/bootstrap/cache" ]] && run "bootstrap/cache perms" chmod -R ug+rwX "${APP_DIR}/bootstrap/cache" || true
 }
 
+ensure_cron_running(){
+  local cron_svc
+
+  case "$DISTRO_ID" in
+    debian|ubuntu) cron_svc="cron" ;;
+    fedora|centos|rhel|almalinux|rocky) cron_svc="crond" ;;
+    *) cron_svc="crond" ;;
+  esac
+
+  if start_service "$cron_svc"; then
+    section "Cron service started. (${cron_svc})"
+    return 0
+  fi
+
+  echo -e "Failed to start cron (${cron_svc}). please install & setup cron manually"
+  return 1
+}
+
 setup_cron(){
   local cron_line="* * * * * cd ${APP_DIR} && php artisan schedule:run >> /dev/null 2>&1"
-  run "Install cron for scheduler" bash -lc "(crontab -l 2>/dev/null | grep -v -F \"${cron_line}\"; echo \"${cron_line}\") | crontab -"
+  ensure_cron_running
+  if have crontab >/dev/null 2>&1; then
+    run "Install cron for scheduler" bash -lc "(crontab -l 2>/dev/null | grep -v -F \"${cron_line}\"; echo \"${cron_line}\") | crontab -"
+  fi
 }
 
 setup_systemd_queue(){
