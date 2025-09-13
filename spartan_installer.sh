@@ -843,7 +843,7 @@ app_env_setup(){
     env_write_value "DB_PASSWORD" "${DB_PASS}"
 }
 
-app_get_env_values() {
+app_get_variables() {
     local envfile="${APP_DIR}/.env"
     if [[ -f "$envfile" ]]; then
         section "Reading existing .env file for configuration"
@@ -851,12 +851,22 @@ app_get_env_values() {
         LICENSE_KEY=$(grep -E '^LICENSE_KEY=' "$envfile" | cut -d'=' -f2 || echo "")
         PRODUCT_ID=$(grep -E '^PRODUCT_ID=' "$envfile" | cut -d'=' -f2 || echo "")
         DB_ENGINE=$(grep -E '^DB_CONNECTION=' "$envfile" | cut -d'=' -f2 || echo "mariadb")
+        [[ "$DB_ENGINE" == "mysql" ]] && DB_ENGINE="mysql" || DB_ENGINE="mariadb"
         DB_HOST=$(grep -E '^DB_HOST=' "$envfile" | cut -d'=' -f2 || echo "127.0.0.1")
         DB_PORT=$(grep -E '^DB_PORT=' "$envfile" | cut -d'=' -f2 || echo "3306")
         DB_NAME=$(grep -E '^DB_DATABASE=' "$envfile" | cut -d'=' -f2 || echo "dezerx")
         DB_USER=$(grep -E '^DB_USERNAME=' "$envfile" | cut -d'=' -f2 || echo "dezer")
         DB_PASS=$(grep -E '^DB_PASSWORD=' "$envfile" | cut -d'=' -f2 || echo "")
-        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}"
+
+        if systemctl is-active --quiet nginx 2>/dev/null; then
+           WEB="nginx"
+        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+            WEB="apache"
+        else
+           die "No supported web server detected (nginx or apache)."
+        fi
+        
+        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
     else
         section "No .env file found. Default values will be used."
     fi
@@ -1140,8 +1150,8 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     exit 0
     
     elif [[ "$CHOICE" == "update" ]]; then
-    # Get env values
-    app_get_env_values
+    # Get all needed variables
+    app_get_variables
     
     # Backup app
     create_backup
