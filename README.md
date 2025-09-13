@@ -1,6 +1,6 @@
-# Spartan-Installer
+# Spartan-Installer (Dev)
 
-Official Repo for DezerX Spartan Installer
+Official Dev Repo for DezerX Spartan Installer
 
 ## Description
 
@@ -35,7 +35,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 1. **Copy & Paste the command**
    ```bash
-   bash -c "$(curl -fsSL https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer/releases/latest/download/spartan_installer.sh)"
+   sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer/dev/spartan_installer.sh')"
    ```
 
 2. **Follow the interactive prompts to complete the installation.**
@@ -46,7 +46,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer.git
+   git clone -b dev https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer.git
    cd Spartan-Installer
    ```
 

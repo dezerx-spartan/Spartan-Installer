@@ -130,7 +130,7 @@ start_service(){
 
   if is_systemd && have systemctl >/dev/null 2>&1; then
     section "Attempting to start ${svc} via systemctl"
-    if systemctl enable --now "$svc" >/dev/null 2>&1 || systemctl start "$svc" >/dev/null 2>&1
+    if systemctl enable --now "$svc" >/dev/null 2>&1 || systemctl start "$svc" >/dev/null 2>&1; then
       return 0
     fi
   fi
