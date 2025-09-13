@@ -885,14 +885,14 @@ setup_cron(){
     local match_regex="cd ${escaped_app_dir} .*artisan schedule:run"
     ensure_cron_running
     if have crontab >/dev/null 2>&1; then
+        local tmp_file=$(mktemp)
         run "Install cron for scheduler" bash -lc "
-            tmp=$(mktemp)
-            (crontab -l 2>/dev/null || true) | sed '|${match_regex}|d' > \"${tmp}\"
-            echo -e \"${cron_line}\" >> \"${tmp}\"
-            crontab \"${tmp}\"
-            rm -f \"${tmp}\"
+            (crontab -l 2>/dev/null || true) | sed '|${match_regex}|d' > \"${tmp_file}\"
+            echo -e \"${cron_line}\" >> \"${tmp_file}\"
+            crontab \"${tmp_file}\"
+            rm -f \"${tmp_file}\"
         "
-    fi  
+    fi
 }
 
 setup_systemd_queue(){
