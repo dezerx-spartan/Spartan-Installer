@@ -843,34 +843,6 @@ app_env_setup(){
     env_write_value "DB_PASSWORD" "${DB_PASS}"
 }
 
-app_get_variables() {
-    local envfile="${APP_DIR}/.env"
-    if [[ -f "$envfile" ]]; then
-        section "Reading existing .env file for configuration"
-        DOMAIN=$(grep -E '^APP_URL=' "$envfile" | cut -d'=' -f2 | sed 's|http[s]*://||' | sed 's|/.*||' || echo "")
-        LICENSE_KEY=$(grep -E '^LICENSE_KEY=' "$envfile" | cut -d'=' -f2 || echo "")
-        PRODUCT_ID=$(grep -E '^PRODUCT_ID=' "$envfile" | cut -d'=' -f2 || echo "")
-        DB_ENGINE=$(grep -E '^DB_CONNECTION=' "$envfile" | cut -d'=' -f2 || echo "mariadb")
-        [[ "$DB_ENGINE" == "mysql" ]] && DB_ENGINE="mysql" || DB_ENGINE="mariadb"
-        DB_HOST=$(grep -E '^DB_HOST=' "$envfile" | cut -d'=' -f2 || echo "127.0.0.1")
-        DB_PORT=$(grep -E '^DB_PORT=' "$envfile" | cut -d'=' -f2 || echo "3306")
-        DB_NAME=$(grep -E '^DB_DATABASE=' "$envfile" | cut -d'=' -f2 || echo "dezerx")
-        DB_USER=$(grep -E '^DB_USERNAME=' "$envfile" | cut -d'=' -f2 || echo "dezer")
-        DB_PASS=$(grep -E '^DB_PASSWORD=' "$envfile" | cut -d'=' -f2 || echo "")
-        
-        if systemctl is-active --quiet nginx 2>/dev/null; then
-            WEB="nginx"
-            elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
-            WEB="apache"
-        else
-            die "No supported web server detected (nginx or apache)."
-        fi
-        
-        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
-    else
-        section "No .env file found. Default values will be used."
-    fi
-}
 
 app_install_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
@@ -880,20 +852,6 @@ app_install_steps(){
     run "artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
     run "artisan migrate --seed" bash -lc "cd '${APP_DIR}' && php artisan migrate --seed --force || true"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link || true"
-}
-
-app_update_steps(){
-    COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
-    if [[ -f "${APP_DIR}/artisan" ]]; then
-        run "artisan down (maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan down || true"
-    fi
-    [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
-    run "artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force || true"
-    if [[ -f "${APP_DIR}/artisan" ]]; then
-        run "artisan up (end maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan up || true"
-    fi
 }
 
 apply_permissions(){
@@ -923,13 +881,25 @@ ensure_cron_running(){
 
 setup_cron(){
     local cron_line="* * * * * cd ${APP_DIR} && php artisan schedule:run >> /dev/null 2>&1"
+    local escaped_app_dir=$(printf '%s\n' "${APP_DIR}" | sed 's/[][\.*^$(){}?+|/]/\\&/g')
+    local match_regex="cd ${escaped_app_dir} .*artisan schedule:run"
     ensure_cron_running
     if have crontab >/dev/null 2>&1; then
-        run "Install cron for scheduler" bash -lc "(crontab -l 2>/dev/null | grep -v -F \"${cron_line}\"; echo \"${cron_line}\") | crontab -"
-    fi
+        run "Install cron for scheduler" bash -lc "
+            tmp=$(mktemp)
+            (crontab -l 2>/dev/null || true) | sed '|${match_regex}|d' > \"${tmp}\"
+            echo -e \"${cron_line}\" >> \"${tmp}\"
+            crontab \"${tmp}\"
+            rm -f \"${tmp}\"
+        "
+    fi  
 }
 
 setup_systemd_queue(){
+    if [[ -f "/etc/systemd/system/dezerx.service" ]]; then
+        run "Removing duplicate/old dezerx.service file" rm -f "/etc/systemd/system/dezerx.service"
+    fi
+
     local svc="/etc/systemd/system/dezerx.service"
   run "Create systemd service dezerx.service" bash -lc "cat >'$svc' <<EOF
 [Unit]
@@ -996,7 +966,19 @@ flip_app_url_to_https(){
 }
 
 # Backup/Restore logic for updates
-create_backup() {
+app_maintenance_on(){
+    if [[ -f "${APP_DIR}/artisan" ]]; then
+        run "artisan down (maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan down || true"
+    fi
+}
+
+app_maintenance_off(){
+    if [[ -f "${APP_DIR}/artisan" ]]; then
+        run "artisan up (end maintenance mode)" bash -lc "cd '${APP_DIR}' && php artisan up || true"
+    fi
+}
+
+create_app_backup() {
     local backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
     BACKUP_FILE="${backup_dir}.tar.gz"
     
@@ -1016,7 +998,7 @@ create_db_backup() {
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
         
-        elif [[ "$DB_ENGINE" == "mariadb" ]]; then
+    elif [[ "$DB_ENGINE" == "mariadb" ]]; then
         local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
         DB_BACKUP_FILE="${backup_dir}.sql.gz"
         
@@ -1029,7 +1011,12 @@ create_db_backup() {
     fi
 }
 
-restore_backup() {
+create_backups(){
+    create_app_backup
+    create_db_backup
+}
+
+restore_app_backup() {
     if [[ -f "$BACKUP_FILE" ]]; then
         section "Restoring backup from ${BACKUP_FILE}"
         tar -xzf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
@@ -1053,19 +1040,65 @@ restore_db_backup() {
     fi
 }
 
+restore_backups() {
+    restore_app_backup
+    restore_db_backup
+}
+
 cleanup_old_backups() {
     find /tmp -name "spartan_backup_*.tar.gz" -type f -mtime +7 -exec rm -f {} \;
     find /tmp -name "spartan_db_backup_*.sql.gz" -type f -mtime +7 -exec rm -f {} \;
 }
 
-# Validation of variables
-validate_variables() {
-    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
-        die "Missing required configuration. Ensure all variables are properly set."
-    fi
-    
-    if [[ ! -d "$APP_DIR" ]]; then
-        die "Application directory $APP_DIR does not exist."
+
+app_get_env() {
+    local envfile="${APP_DIR}/.env"
+
+    get_env_value(){
+        local key=$1 
+        grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
+    }
+
+    if [[ -f "$envfile" ]]; then
+        section "Reading existing .env file for configuration"
+        DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
+        LICENSE_KEY=$(get_env_value "LICENSE_KEY")
+        PRODUCT_ID=$(get_env_value "PRODUCT_ID")
+        DB_ENGINE=$(get_env_value "DB_CONNECTION")
+        DB_HOST=$(get_env_value "DB_HOST")
+        DB_PORT=$(get_env_value "DB_PORT")
+        DB_NAME=$(get_env_value "DB_DATABASE")
+        DB_USER=$(get_env_value "DB_USERNAME")
+        DB_PASS=$(get_env_value "DB_PASSWORD")
+        
+        DB_ENGINE=${DB_ENGINE:-mariadb}
+        DB_HOST=${DB_HOST:-127.0.0.1}
+        DB_PORT=${DB_PORT:-3306}
+        DB_NAME=${DB_NAME:-dezerx}
+        DB_USER=${DB_USER:-dezer}
+        DB_PASS=${DB_PASS:-}
+
+        case "$DB_CONNECTION" in
+            mysql) DB_ENGINE="mysql" ;;
+            mariadb) DB_ENGINE="mariadb" ;;  # if you support PostgreSQL
+            *) DB_ENGINE="postgresql" ;;  # default
+        esac
+
+        if systemctl is-active --quiet nginx 2>/dev/null; then
+            WEB="nginx"
+        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+            WEB="apache"
+        else
+            die "No supported web server detected (nginx or apache)."
+        fi
+        
+        if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
+            die "Missing required configuration. Ensure all variables are properly set."
+        fi
+
+        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
+    else
+        section "No .env file found. Default values will be used."
     fi
 }
 
@@ -1160,25 +1193,25 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     hr
     exit 0
     
-    elif [[ "$CHOICE" == "update" ]]; then
+elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
-    app_get_variables
-    
-    validate_variables
-    
+    app_maintenance_on
+    app_get_env
+
     # Backup app
-    create_backup
-    create_db_backup
+    create_backups
     
     # License part
     license_verify
     license_download_and_extract
     
     detect_web_user_group
-    
+    app_env_setup
     # Install and set perms
-    if app_update_steps; then
+    if app_install_steps; then
         apply_permissions
+        setup_cron
+        setup_systemd_queue
         
         # Restart services
         if [[ "$WEB" == "nginx" ]]; then
@@ -1189,6 +1222,8 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         else
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
         fi
+        
+        app_maintenance_off
         
         section "All done!"
         echo "Domain:       ${DOMAIN}"
@@ -1208,8 +1243,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
         hr
     else
-        restore_backup
-        restore_db_backup
+        restore_backups
         die "Update failed, backup restored."
     fi
     
@@ -1217,11 +1251,9 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     cleanup_old_backups
     exit 0
     
-    elif [[ "$CHOICE" == "delete" ]]; then
+elif [[ "$CHOICE" == "delete" ]]; then
     # Get all needed variables
-    app_get_variables
-    
-    validate_variables
+    app_get_env
     
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
