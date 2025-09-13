@@ -1064,13 +1064,14 @@ app_get_env() {
         DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
-        DB_ENGINE=$(get_env_value "DB_CONNECTION")
+        DB_CONNECTION=$(get_env_value "DB_CONNECTION")
         DB_HOST=$(get_env_value "DB_HOST")
         DB_PORT=$(get_env_value "DB_PORT")
         DB_NAME=$(get_env_value "DB_DATABASE")
         DB_USER=$(get_env_value "DB_USERNAME")
         DB_PASS=$(get_env_value "DB_PASSWORD")
         
+        DB_CONNECTION=${DB_CONNECTION:-mariadb}
         DB_ENGINE=${DB_ENGINE:-mariadb}
         DB_HOST=${DB_HOST:-127.0.0.1}
         DB_PORT=${DB_PORT:-3306}
@@ -1080,8 +1081,8 @@ app_get_env() {
 
         case "$DB_CONNECTION" in
             mysql) DB_ENGINE="mysql" ;;
-            mariadb) DB_ENGINE="mariadb" ;;  # if you support PostgreSQL
-            *) DB_ENGINE="postgresql" ;;  # default
+            mariadb) DB_ENGINE="mariadb" ;;
+            *) DB_ENGINE="mariadb" ;;
         esac
 
         if systemctl is-active --quiet nginx 2>/dev/null; then
