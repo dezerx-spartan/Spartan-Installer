@@ -796,7 +796,7 @@ detect_web_user_group(){
 }
 
 config_php_fpm(){
-  local sock sock_path; sock="$(php_fpm_socket)"; sock_path="${sock#unix:}"
+  local sock sock_path; sock="$(php_fpm_conf)"
   run "Updating user to ${APP_USER} in: ${sock_path}" sed -i "s|^user = .*|user = ${APP_USER}|" "${sock_path}"
   run "Updating user to ${APP_GROUP} in: ${sock_path}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${sock_path}"
   restart_php_fpm
