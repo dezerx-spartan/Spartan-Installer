@@ -156,7 +156,7 @@ start_service(){
 main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
         "install" "Install DezerX Spartan" \
-        "update" "Update DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+    "update" "Update DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
 }
 
 ask_domain(){
@@ -988,7 +988,7 @@ flip_app_url_to_https(){
 create_backup() {
     local backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
     BACKUP_FILE="${backup_dir}.tar.gz"
-
+    
     section "Creating backup of ${APP_DIR} at ${BACKUP_FILE}"
     mkdir -p "$(dirname "$BACKUP_FILE")"
     tar -czf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
@@ -999,7 +999,7 @@ create_db_backup() {
     if [[ "$DB_ENGINE" == "mysql" ]]; then
         local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
         DB_BACKUP_FILE="${backup_dir}.sql.gz"
-
+        
         section "Creating database backup at ${DB_BACKUP_FILE}"
         mkdir -p "$(dirname "$DB_BACKUP_FILE")"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
@@ -1123,51 +1123,52 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     hr
     exit 0
     
-elif [[ "$CHOICE" == "update" ]]; then
+    elif [[ "$CHOICE" == "update" ]]; then
     # Get env values
     app_get_env_values
-
+    
     # Backup app
     create_backup
     create_db_backup
-
+    
     # License part
     license_verify
     license_download_and_extract
-
+    
     # Install and set perms
     if app_update_steps; then
-    apply_permissions
-
-    # Restart services
-    if [[ "$WEB" == "nginx" ]]; then
-      restart_php_fpm
-      run "Restart nginx" systemctl restart nginx
+        apply_permissions
+        
+        # Restart services
+        if [[ "$WEB" == "nginx" ]]; then
+            restart_php_fpm
+            run "Restart nginx" systemctl restart nginx
+        else
+            run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
+        fi
+        
+        section "All done!"
+        echo "Domain:       ${DOMAIN}"
+        echo "App Path:     ${APP_DIR}"
+        echo "DocumentRoot: ${APP_DIR}/public"
+        echo "Web server:   ${WEB}"
+        echo "DB engine:    ${DB_ENGINE}"
+        echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
+        php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
+        echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+        echo "Log:          ${LOG}"
+        hr
+        echo "Useful:"
+        echo " systemctl status dezerx.service"
+        echo " crontab -l"
+        [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
+        echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
+        hr
+        exit 0
     else
-      run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
+        restore_backup
+        restore_db_backup
+        die "Update failed, backup restored."
+        cleanup_old_backups
     fi
-
-    section "All done!"
-    echo "Domain:       ${DOMAIN}"
-    echo "App Path:     ${APP_DIR}"
-    echo "DocumentRoot: ${APP_DIR}/public"
-    echo "Web server:   ${WEB}"
-    echo "DB engine:    ${DB_ENGINE}"
-    echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
-    php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
-    echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    echo "Log:          ${LOG}"
-    hr
-    echo "Useful:"
-    echo " systemctl status dezerx.service"
-    echo " crontab -l"
-    [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
-    echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
-    hr
-    exit 0
-    else
-    restore_backup
-    restore_db_backup
-    die "Update failed, backup restored."
-    cleanup_old_backups
 fi
