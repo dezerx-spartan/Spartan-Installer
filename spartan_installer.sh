@@ -340,12 +340,39 @@ install_db_engine(){
 }
 
 install_composer(){
-  run "Install Composer" bash -lc "curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer"
-  run "Verifying if Composer is accessible" bash -lc "if ! command -v composer >/dev/null 2>&1; then ln -sf /usr/local/bin/composer /usr/bin/composer || true; fi"
-  if ! command -v composer 2>&1; then
-    run "Creating a symlink to /usr/local/bin/composer -> /usr/bin/composer"
-    ln -sf /usr/local/bin/composer /usr/bin/composer || true
+  if have composer >/dev/null 2>&1; then
+    section "Composer already installed. $(command -v composer)"
+    return 0
   fi
+
+  run "Install composer" bash -lc "curl -fsSL https://getcomposer.org/composer-stable.phar -o /usr/local/bin/composer"
+  run "Making composer executable" bash -lc "chmod +x /usr/local/bin/composer || true"
+
+  if [[ ! -e "/usr/bin/composer" ]]; then
+    run "Creating a symlink from /usr/local/bin/composer -> /usr/bin/composer" ln -sf /usr/local/bin/composer /usr/bin/composer || true
+  fi
+
+  if have composer >/dev/null 2>&1; then
+    section "Composer installed. $(command -v composer)"
+    return 0
+  fi
+
+  # Falback to the installer
+  local temp_installer
+  temp_installer="$(mktemp)"
+
+  run "Downloading composer installer." bash -lc "curl -fsSL https://getcomposer.org/installer -o '${temp_installer}'"
+  run "Running composer installer" bash -lc "php '${temp_installer}' --install-dir=/usr/local/bin --filename=composer"
+
+  rm -f "${temp_installer}" || true
+
+  if have composer >/dev/null 2>&1; then
+    section "Composer installed. $(command -v composer)"
+    return 0
+  fi 
+
+  echo -e "Failed to install composer."
+  return 1
 }
 
 # ---------------- License & Download ----------------
