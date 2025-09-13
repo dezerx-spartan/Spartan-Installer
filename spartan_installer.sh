@@ -6,7 +6,7 @@ set -euo pipefail
 trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
 TITLE="DezerX Spartan Installer"
-LOG="/var/log/dezerx_installer.log"
+LOG="/var/log/spartan_installer.log"
 APP_DIR="/var/www/spartan"            # Default; wird interaktiv abgefragt
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
@@ -94,15 +94,30 @@ pm_update_upgrade(){
 }
 
 install_essentials(){
-  pm_install "Installing essential dependencies" curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl
+  local pkgs=()
 
-  if have whiptail; then return; fi
   case "$DISTRO_ID" in
-    debian|ubuntu) run "Installing whiptail" apt-get install -y whiptail ;;
-    centos|rhel|almalinux|rocky) if have dnf; then run "Installing newt (whiptail)" dnf -y install newt; else run "Installing newt (whiptail)" yum -y install newt; fi ;;
-    fedora) run "Installing newt (whiptail)" dnf -y install newt ;;
-    *) die "Cannot install whiptail/newt automatically on $DISTRO_ID" ;;
+    debian|ubuntu) 
+      pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps)
+      ;;
+    centos|rhel|almalinux|rocky) 
+      pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps)
+      ;;
+    fedora) 
+      pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps)
+      ;;
+    *) die "Distro not supported $DISTRO_ID" ;;
   esac
+
+  if ! have whiptail; then
+    case "$DISTRO_ID" in
+      debian|ubuntu) pkgs+=(whiptail) ;;
+      fedora|centos|rhel|almalinux|rocky) pkgs+=(newt) ;;
+      *) die "Distro not supported $DISTRO_ID" ;;
+    esac
+  fi
+
+  pm_install "Installing essential dependencies" "${pkgs[@]}"
 }
 
 # ---------------- Menüs ----------------
@@ -263,6 +278,7 @@ install_nodejs_lts(){
 install_webserver(){
   if [[ "$WEB" == "nginx" ]]; then
     pm_install nginx
+    run "Starting nginx" systemctl start nginx || true
   elif [[ "$WEB" == "apache" ]]; then
       case "$DISTRO_ID" in
         debian|ubuntu) pm_install apache2 ;;
@@ -645,15 +661,68 @@ env_write_value(){
 }
 
 detect_web_user_group(){
+  local user="" group="" proc_user pid candidates detection_method=""
   APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
+
   if [[ "$WEB" == "nginx" ]]; then
-    id nginx >/dev/null 2>&1 && { APP_USER="nginx"; APP_GROUP="nginx"; } || \
-    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
+    candidates=(nginx www-data www)
   else
-    id apache >/dev/null 2>&1 && { APP_USER="apache"; APP_GROUP="apache"; } || \
-    id www-data >/dev/null 2>&1 && { APP_USER="www-data"; APP_GROUP="www-data"; }
+    candidates=(apache2 httpd apache)
   fi
-  section "Using web user/group: ${APP_USER}:${APP_GROUP}"
+
+  # tbh those two functions are pretty much the same but why not
+  # Get user from pid using systemctl and group using id
+  if command -v systemctl >/dev/null 2>&1; then
+    for svc in "${candidates[@]}"; do
+      if systemctl is-active --quiet "$svc" >/dev/null 2>&1; then
+        if ! systemctl list-unit-files --type=service --all | grep -qw "${svc}.service"; then
+          continue
+        fi
+
+        pid="$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)"
+        if [[ -n "$pid" && "$pid" -gt 0 ]]; then
+          user="$(ps -o user= -p "$pid" 2>/dev/null | awk '{print $1}' || true)"
+        fi
+
+        if [[ "$user" == "root" || -z "$user" ]]; then
+          if command -v pgrep >/dev/null 2>&1 && pgrep -x "$svc" >/dev/null 2>&1; then
+            proc_user="$(ps -o user= -C "$svc" 2>/dev/null | awk '{print $1}' | grep -v "^root$" | head -n1 || true)"
+            [[ -n $proc_user ]] && user="$proc_user"
+          fi
+        fi
+
+        if [[ -n "$user" ]]; then
+          group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+          detection_method="candidates + systemctl"
+          break
+        fi
+      fi
+    done
+  fi
+
+  # falback to id if systemctl isn't active/installed
+  if [[ -z "${user}" || -z "${group}" ]]; then
+    for u in "${candidates[@]}"; do
+      if id "$u" >/dev/null 2>&1; then
+        user="$u"
+        group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+        detection_method="candidates + id"
+        break
+      fi
+    done
+  fi
+
+  # last falback to the defaults
+  if [[ -z "${user}" || -z "${group}" ]]; then
+    user="${$APP_USER_DEFAULT}"
+    group="${$APP_USER_DEFAULT}"
+    detection_method="defaults"
+  fi
+
+  APP_USER="${user}"
+  APP_GROUP="${group}"
+
+  section "Using web user/group: ${APP_USER}:${APP_GROUP} (method=${detection_method})"
 }
 
 app_env_setup(){
@@ -806,9 +875,6 @@ DB User: ${DB_USER}
 Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
 
 Proceed with installation (live output)?" 22 72 || exit 1
-
-# Update caches early and ensure download tooling
-pm_update_upgrade 0
 
 # License part
 license_verify
