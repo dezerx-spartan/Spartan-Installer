@@ -156,7 +156,7 @@ start_service(){
 main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
         "install" "Install DezerX Spartan" \
-        "update" "Update DezerX Spartan" 3>&1 1>&2 2>&3)
+        "update" "Update DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
 }
 
 ask_domain(){
@@ -984,9 +984,10 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-main_menu || { echo "Operation cancelled."; }
+main_menu
 
 if [[ "$CHOICE" == "install" ]]; then
+    # Installation logic
     ask_domain
     ask_license_key
     ask_app_dir
@@ -1069,7 +1070,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     exit 0
     
 elif [[ "$CHOICE" == "update" ]]; then
-    # Get env vars from existing .env if possible
+    # Update logic
     app_get_env_values
 
     # License part
