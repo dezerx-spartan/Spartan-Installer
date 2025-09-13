@@ -850,6 +850,7 @@ app_get_env_values() {
         DOMAIN=$(grep -E '^APP_URL=' "$envfile" | cut -d'=' -f2 | sed 's|http[s]*://||' | sed 's|/.*||' || echo "")
         LICENSE_KEY=$(grep -E '^LICENSE_KEY=' "$envfile" | cut -d'=' -f2 || echo "")
         PRODUCT_ID=$(grep -E '^PRODUCT_ID=' "$envfile" | cut -d'=' -f2 || echo "")
+        DB_ENGINE=$(grep -E '^DB_CONNECTION=' "$envfile" | cut -d'=' -f2 || echo "mysql")
         DB_HOST=$(grep -E '^DB_HOST=' "$envfile" | cut -d'=' -f2 || echo "127.0.0.1")
         DB_PORT=$(grep -E '^DB_PORT=' "$envfile" | cut -d'=' -f2 || echo "3306")
         DB_NAME=$(grep -E '^DB_DATABASE=' "$envfile" | cut -d'=' -f2 || echo "dezerx")
