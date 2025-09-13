@@ -1155,8 +1155,10 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         if [[ "$WEB" == "nginx" ]]; then
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
-        else
+        elif [[ "$WEB" == "apache" ]]; then
             run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
+        else
+            echo "Unknown web server, cannot restart." | tee -a "$LOG"
         fi
         
         section "All done!"
