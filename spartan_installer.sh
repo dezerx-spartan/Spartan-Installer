@@ -692,7 +692,7 @@ server {
     ssl_prefer_server_ciphers on;
 
     add_header X-Content-Type-Options nosniff;
-    add_header X-XSS-Protection \"1; mode=block\";
+    add_header X-XSS-Protection "1; mode=block";
     add_header X-Robots-Tag none;
     add_header Content-Security-Policy \"frame-ancestors 'self'\";
     add_header X-Frame-Options DENY;
@@ -786,8 +786,8 @@ detect_web_user_group(){
     
     # last falback to the defaults
     if [[ -z "${user}" || -z "${group}" ]]; then
-        user="${$APP_USER_DEFAULT}"
-        group="${$APP_USER_DEFAULT}"
+        user="$APP_USER_DEFAULT"
+        group="$APP_GROUP_DEFAULT"
         detection_method="defaults"
     fi
     
@@ -851,14 +851,29 @@ app_get_env_values() {
         LICENSE_KEY=$(grep -E '^LICENSE_KEY=' "$envfile" | cut -d'=' -f2 || echo "")
         PRODUCT_ID=$(grep -E '^PRODUCT_ID=' "$envfile" | cut -d'=' -f2 || echo "")
         DB_ENGINE=$(grep -E '^DB_CONNECTION=' "$envfile" | cut -d'=' -f2 || echo "mariadb")
+        # Convert mysql connection type to mysql engine for consistency
+        [[ "$DB_ENGINE" == "mysql" ]] && DB_ENGINE="mysql" || DB_ENGINE="mariadb"
         DB_HOST=$(grep -E '^DB_HOST=' "$envfile" | cut -d'=' -f2 || echo "127.0.0.1")
         DB_PORT=$(grep -E '^DB_PORT=' "$envfile" | cut -d'=' -f2 || echo "3306")
         DB_NAME=$(grep -E '^DB_DATABASE=' "$envfile" | cut -d'=' -f2 || echo "dezerx")
         DB_USER=$(grep -E '^DB_USERNAME=' "$envfile" | cut -d'=' -f2 || echo "dezer")
         DB_PASS=$(grep -E '^DB_PASSWORD=' "$envfile" | cut -d'=' -f2 || echo "")
-        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}"
+        
+        # Detect web server type from running services
+        if systemctl is-active --quiet nginx 2>/dev/null; then
+            WEB="nginx"
+        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+            WEB="apache"
+        else
+            WEB="nginx"  # Default fallback
+        fi
+        
+        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
     else
         section "No .env file found. Default values will be used."
+        # Set defaults for update mode
+        DB_ENGINE="mariadb"
+        WEB="nginx"
     fi
 }
 
@@ -889,8 +904,12 @@ app_update_steps(){
 apply_permissions(){
     run "Set ownership to ${APP_USER}:${APP_GROUP}" chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
     run "Set permissions 755" chmod -R 755 "${APP_DIR}"
-    [[ -d "${APP_DIR}/storage" ]] && run "storage perms" chmod -R ug+rwX "${APP_DIR}/storage" || true
-    [[ -d "${APP_DIR}/bootstrap/cache" ]] && run "bootstrap/cache perms" chmod -R ug+rwX "${APP_DIR}/bootstrap/cache" || true
+    if [[ -d "${APP_DIR}/storage" ]]; then
+        run "storage perms" chmod -R ug+rwX "${APP_DIR}/storage" || true
+    fi
+    if [[ -d "${APP_DIR}/bootstrap/cache" ]]; then 
+        run "bootstrap/cache perms" chmod -R ug+rwX "${APP_DIR}/bootstrap/cache" || true
+    fi
 }
 
 ensure_cron_running(){
@@ -1140,8 +1159,22 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     exit 0
     
     elif [[ "$CHOICE" == "update" ]]; then
+    # Validate APP_DIR exists
+    if [[ ! -d "$APP_DIR" ]]; then
+        echo "Error: Application directory $APP_DIR does not exist."
+        echo "Please ensure the application is installed first."
+        exit 1
+    fi
+    
     # Get env values
     app_get_env_values
+    
+    # Validate that we have required values
+    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" ]]; then
+        echo "Error: Missing required configuration from .env file."
+        echo "Please ensure DOMAIN, LICENSE_KEY, and PRODUCT_ID are set."
+        exit 1
+    fi
     
     # Backup app
     create_backup
