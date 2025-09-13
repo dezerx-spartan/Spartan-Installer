@@ -984,6 +984,49 @@ flip_app_url_to_https(){
     fi
 }
 
+# Backup/Restore logic for updates
+create_backup() {
+    local backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
+    BACKUP_FILE="${backup_dir}.tar.gz"
+
+    section "Creating backup of ${APP_DIR} at ${BACKUP_FILE}"
+    mkdir -p "$(dirname "$BACKUP_FILE")"
+    tar -czf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
+    echo "Backup created at: $BACKUP_FILE"
+}
+
+create_db_backup() {
+    if [[ "$DB_ENGINE" == "mysql" ]]; then
+        local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
+        DB_BACKUP_FILE="${backup_dir}.sql.gz"
+
+        section "Creating database backup at ${DB_BACKUP_FILE}"
+        mkdir -p "$(dirname "$DB_BACKUP_FILE")"
+        mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
+        echo "Database backup created at: $DB_BACKUP_FILE"
+    fi
+}
+
+restore_backup() {
+    if [[ -f "$BACKUP_FILE" ]]; then
+        section "Restoring backup from ${BACKUP_FILE}"
+        tar -xzf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
+        echo "Backup restored successfully."
+    else
+        die "No backup file found to restore."
+    fi
+}
+
+restore_db_backup() {
+    if [[ -f "$DB_BACKUP_FILE" && "$DB_ENGINE" == "mysql" ]]; then
+        section "Restoring database backup from ${DB_BACKUP_FILE}"
+        gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
+        echo "Database backup restored successfully."
+    else
+        die "No database backup file found to restore."
+    fi
+}
+
 # ---------------- Flow ----------------
 need_root
 detect_os
@@ -1076,15 +1119,19 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     exit 0
     
 elif [[ "$CHOICE" == "update" ]]; then
-    # Update logic
+    # Get env values
     app_get_env_values
+
+    # Backup app
+    create_backup
+    create_db_backup
 
     # License part
     license_verify
     license_download_and_extract
 
     # Install and set perms
-    app_update_steps
+    if app_update_steps; then
     apply_permissions
 
     # Restart services
@@ -1113,4 +1160,8 @@ elif [[ "$CHOICE" == "update" ]]; then
     echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
     hr
     exit 0
+    else
+    restore_backup
+    restore_db_backup
+    die "Update failed, backup restored."
 fi
