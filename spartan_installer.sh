@@ -54,7 +54,7 @@ pm_install(){
 
     case "$DISTRO_ID" in
         debian|ubuntu) run "${desc}" apt-get install -y "$@" ;;
-        centos|rhel|almalinux|rocky) if have dnf; then run "${desc}" dnf -y install "$@"; else run "${desc}" yum -y install "$@"; fi ;;
+        centos|rhel|almalinux|rocky) if have dnf; then run "${desc}" dnf -y --setopt=install_weak_deps=False install "$@"; else run "${desc}" yum -y install "$@"; fi ;;
         fedora) run "${desc}" dnf -y install "$@" ;;
         *) die "Unsupported distro for package install: $DISTRO_ID" ;;
     esac
@@ -710,15 +710,6 @@ EOF"
 # ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
 ensure_app_dir(){ run "Ensure app directory ${APP_DIR}" bash -lc "mkdir -p '${APP_DIR}/public'"; }
 
-env_write_value(){
-  local key="$1" val="$2"
-  if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
-    run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
-  else
-    run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
-  fi
-}
-
 detect_web_user_group(){
   local user="" group="" proc_user pid candidates detection_method=""
   APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
@@ -782,6 +773,22 @@ detect_web_user_group(){
   APP_GROUP="${group}"
 
   section "Using web user/group: ${APP_USER}:${APP_GROUP} (method=${detection_method})"
+}
+
+config_php_fpm(){
+  local sock; sock="${php_fpm_socket}"
+  run "Updating user to ${APP_USER} in: ${sock}" sed -i "s|^user = .*|user = ${APP_USER}" "${sock}"
+  run "Updating user to ${APP_GROUP} in: ${sock}" sed -i "s|^group = .*|group = ${APP_GROUP}" "${sock}"
+  restart_php_fpm
+}
+
+env_write_value(){
+  local key="$1" val="$2"
+  if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
+    run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
+  else
+    run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
+  fi
 }
 
 app_env_setup(){
@@ -892,9 +899,9 @@ install_certbot_pkgs(){
   case "$DISTRO_ID" in
     debian|ubuntu)
       if [[ "$WEB" == "nginx" ]]; then 
-        pm_install certbot python3-certbot-nginx
+        pm_install certbot python3-certbot-nginx || pm_install certbot || true
       else 
-        pm_install certbot python3-certbot-apache
+        pm_install certbot python3-certbot-apache || pm_install certbot || true
       fi
       ;;
     fedora|centos|rhel|almalinux|rocky)
@@ -970,6 +977,7 @@ install_composer
 [[ "$IONCUBE" == "install" ]] && install_ioncube || section "Skipping ionCube (user choice)"
 
 # App setup & build
+config_php_fpm
 app_env_setup
 app_install_steps
 apply_permissions
