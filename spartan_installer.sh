@@ -514,6 +514,7 @@ license_download_and_extract(){
 
 # ---------------- PHP-FPM helpers ----------------
 find_php_fpm_service(){ systemctl list-unit-files --type=service | awk '/php.*-fpm\.service/ {print $1}' | sort -r | head -n1; }
+php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2"; }
 start_php_fpm(){
   local svc; svc="$(find_php_fpm_service)"
   if [[ -n "$svc" ]]; then run "Enable/start ${svc}" systemctl enable --now "$svc"; else run "Enable/start php-fpm (generic)" systemctl enable --now php-fpm || true; fi
@@ -524,13 +525,32 @@ restart_php_fpm(){
 }
 php_fpm_socket(){
   for s in /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
-    [[ -S "$s" ]] && { echo "unix:$s"; return; }
+    [[ -S "$s" ]] && { echo "unix:$s"; return 0; }
   done
   echo "unix:/run/php/php-fpm.sock"
 }
+php_fpm_conf(){
+  local candidates=()
+
+  case "$DISTRO_ID" in
+    debian|ubuntu)
+      candidates+=("/etc/php/*/fpm/pool.d/www.conf")
+      candidates+=("/etc/php/$(php_minor)/fpm/pool.d/www.conf")
+      ;;
+    fedora|centos|rhel|almalinux|rocky)
+      candidates+=("/etc/php-fpm.d/www.conf")
+      ;;
+  esac
+
+  for cf in "${candidates[@]}"; do
+    [[ -f "$cf" ]] && { echo "$cf"; return 0; }
+  done
+
+  return 1
+}
+
 
 # ---------------- ionCube ----------------
-php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2"; }
 install_ioncube(){
   local PHPV ARCH URL TMP TAR SO
   PHPV="$(php_minor)"
