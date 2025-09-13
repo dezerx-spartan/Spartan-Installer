@@ -986,7 +986,7 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-$CHOICE=$(main_menu) || { echo "Operation cancelled."; }
+CHOICE=$(main_menu) || { echo "Operation cancelled."; }
 
 if [[ "$CHOICE" == "install" ]]; then
     ask_domain
