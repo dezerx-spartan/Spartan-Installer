@@ -1070,7 +1070,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     hr
     exit 0
     
-else if [[ "$CHOICE" == "update" ]]; then
+elif [[ "$CHOICE" == "update" ]]; then
     # Get env vars from existing .env if possible
     app_get_env_values
 
