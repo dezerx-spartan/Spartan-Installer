@@ -742,7 +742,6 @@ detect_web_user_group(){
         candidates=(apache2 httpd apache)
     fi
     
-    # tbh those two functions are pretty much the same but why not
     # Get user from pid using systemctl and group using id
     if command -v systemctl >/dev/null 2>&1; then
         for svc in "${candidates[@]}"; do
@@ -772,7 +771,7 @@ detect_web_user_group(){
         done
     fi
     
-    # falback to id if systemctl isn't active/installed
+    # Fallback to id if systemctl isn't active/installed
     if [[ -z "${user}" || -z "${group}" ]]; then
         for u in "${candidates[@]}"; do
             if id "$u" >/dev/null 2>&1; then
@@ -784,10 +783,10 @@ detect_web_user_group(){
         done
     fi
     
-    # last falback to the defaults
+    # Last fallback to the defaults
     if [[ -z "${user}" || -z "${group}" ]]; then
-        user="${$APP_USER_DEFAULT}"
-        group="${$APP_USER_DEFAULT}"
+        user="$APP_USER_DEFAULT"
+        group="$APP_GROUP_DEFAULT"
         detection_method="defaults"
     fi
     
@@ -1058,6 +1057,17 @@ cleanup_old_backups() {
     find /tmp -name "spartan_db_backup_*.sql.gz" -type f -mtime +7 -exec rm -f {} \;
 }
 
+# Validation of variables
+validate_variables() {
+    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
+        die "Missing required configuration. Ensure all variables are properly set."
+    fi
+    
+    if [[ ! -d "$APP_DIR" ]]; then
+        die "Application directory $APP_DIR does not exist."
+    fi
+}
+
 # ---------------- Flow ----------------
 need_root
 detect_os
@@ -1153,17 +1163,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # Get all needed variables
     app_get_variables
     
-    # Validate APP_DIR exists
-    if [[ ! -d "$APP_DIR" ]]; then
-        echo "Error: Application directory $APP_DIR does not exist."
-        exit 1
-    fi
-    
-    # Validate required environment variables
-    if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
-        echo "Error: Missing required configuration from .env file."
-        exit 1
-    fi
+    validate_variables
     
     # Backup app
     create_backup
@@ -1172,6 +1172,8 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # License part
     license_verify
     license_download_and_extract
+
+    detect_web_user_group
     
     # Install and set perms
     if app_update_steps; then
