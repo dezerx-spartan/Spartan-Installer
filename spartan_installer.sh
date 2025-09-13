@@ -777,8 +777,8 @@ detect_web_user_group(){
 
 config_php_fpm(){
   local sock; sock="$(php_fpm_socket)"
-  run "Updating user to ${APP_USER} in: ${sock}" sed -i "s|^user = .*|user = ${APP_USER}" "${sock}"
-  run "Updating user to ${APP_GROUP} in: ${sock}" sed -i "s|^group = .*|group = ${APP_GROUP}" "${sock}"
+  run "Updating user to ${APP_USER} in: ${sock}" sed -i "s|^user = .*|user = ${APP_USER}|" "${sock}"
+  run "Updating user to ${APP_GROUP} in: ${sock}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${sock}"
   restart_php_fpm
 }
 
@@ -832,7 +832,6 @@ app_install_steps(){
 }
 
 apply_permissions(){
-  detect_web_user_group
   run "Set ownership to ${APP_USER}:${APP_GROUP}" chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
   run "Set permissions 755" chmod -R 755 "${APP_DIR}"
   [[ -d "${APP_DIR}/storage" ]] && run "storage perms" chmod -R ug+rwX "${APP_DIR}/storage" || true
@@ -866,7 +865,6 @@ setup_cron(){
 }
 
 setup_systemd_queue(){
-  detect_web_user_group
   local svc="/etc/systemd/system/dezerx.service"
   run "Create systemd service dezerx.service" bash -lc "cat >'$svc' <<EOF
 [Unit]
@@ -977,6 +975,7 @@ install_composer
 [[ "$IONCUBE" == "install" ]] && install_ioncube || section "Skipping ionCube (user choice)"
 
 # App setup & build
+detect_web_user_group
 config_php_fpm
 app_env_setup
 app_install_steps
