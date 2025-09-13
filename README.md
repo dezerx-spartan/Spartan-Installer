@@ -34,12 +34,12 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 ### One line (Recomanded)
 
 1. **Copy & Paste the command**
+
    ```bash
    sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer/dev/spartan_installer.sh')"
    ```
 
 2. **Follow the interactive prompts to complete the installation.**
-
 
 ### Manualy
 
@@ -57,7 +57,6 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
    ```
 
 3. **Follow the interactive prompts to complete the installation.**
-
 
 ## Troubleshooting
 
