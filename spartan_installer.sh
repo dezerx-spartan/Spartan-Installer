@@ -992,7 +992,7 @@ create_backup() {
     section "Creating backup of ${APP_DIR} at ${BACKUP_FILE}"
     mkdir -p "$(dirname "$BACKUP_FILE")"
     tar -czf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
-    echo "Backup created at: $BACKUP_FILE"
+    echo "Backup created at: $BACKUP_FILE" | tee -a "$LOG"
 }
 
 create_db_backup() {
@@ -1003,7 +1003,7 @@ create_db_backup() {
         section "Creating database backup at ${DB_BACKUP_FILE}"
         mkdir -p "$(dirname "$DB_BACKUP_FILE")"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
-        echo "Database backup created at: $DB_BACKUP_FILE"
+        echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
     fi
 }
 
@@ -1025,6 +1025,11 @@ restore_db_backup() {
     else
         die "No database backup file found to restore."
     fi
+}
+
+cleanup_old_backups() {
+    find /tmp -name "spartan_backup_*.tar.gz" -type f -mtime +7 -exec rm -f {} \;
+    find /tmp -name "spartan_db_backup_*.sql.gz" -type f -mtime +7 -exec rm -f {} \;
 }
 
 # ---------------- Flow ----------------
@@ -1164,4 +1169,5 @@ elif [[ "$CHOICE" == "update" ]]; then
     restore_backup
     restore_db_backup
     die "Update failed, backup restored."
+    cleanup_old_backups
 fi
