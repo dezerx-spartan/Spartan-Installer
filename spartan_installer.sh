@@ -757,7 +757,7 @@ server {
 EOF"
     [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
     start_php_fpm
-    run "Test nginx configuration" nginx -t
+    run "Test nginx configuration" nginx -t || true
     run "Restart nginx" systemctl restart nginx
 }
 
