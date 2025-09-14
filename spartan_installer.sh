@@ -849,11 +849,11 @@ app_install_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build || true"
-    run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force || true"
-    run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force || true"
-    run "php artisan db:seed" bash -lc "cd '${APP_DIR}' && php artisan db:seed || true"
-    run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link || true"
+    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force"
+    run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
+    run "php artisan db:seed" bash -lc "cd '${APP_DIR}' && php artisan db:seed"
+    run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
 }
 
 apply_permissions(){
