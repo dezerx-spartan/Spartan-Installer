@@ -850,9 +850,10 @@ app_install_steps(){
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    app_maintenance_on
     run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force"
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
-    run "php artisan db:seed" bash -lc "cd '${APP_DIR}' && php artisan db:seed"
+    run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
 }
 
