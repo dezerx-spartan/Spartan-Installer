@@ -152,6 +152,13 @@ start_service(){
     return 1
 }
 
+clean_app_dir(){
+    find "${APP_DIR}" -mindepth 1 \
+    -not -path "${APP_DIR}/public*" \
+    -not -path "${APP_DIR}/storage*" \
+    -exec rm -rf {} +
+}
+
 # ---------------- Menüs ----------------
 main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
@@ -174,6 +181,12 @@ ask_app_dir(){
     APP_DIR=$(whiptail --title "$TITLE" --inputbox "Application directory (DocumentRoot = APP_DIR/public)\n\nEdit if needed:" 12 70 "$default_dir" 3>&1 1>&2 2>&3) || exit 1
     section "APP_DIR set to: ${APP_DIR}"
 }
+
+ask_update_app_dir(
+    local default_dir="$APP_DIR"
+    APP_DIR=$(whiptail --title "$TITLE" --inputbox "Please Provide the path to the application directory (Where spartan is installed)\n\nEdit:" 12 70 "$default_dir" 3>&1 1>&2 2>&3) || exit 1
+    section "APP_DIR set to: ${APP_DIR}"
+)
 
 choose_webserver(){
     WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
@@ -508,8 +521,9 @@ license_download_and_extract(){
     fi
     
     ensure_app_dir
+    clean_app_dir
     section "Sync application to ${APP_DIR}"
-    rsync -a --delete "$SRC"/ "${APP_DIR}/"/
+    rsync -a "$SRC"/ "${APP_DIR}/"
     
     [[ -f "${APP_DIR}/composer.json" ]] || die "composer.json missing after extraction; invalid payload?"
     echo "App synced to ${APP_DIR}"
@@ -824,14 +838,18 @@ app_env_setup(){
         if (( lines > 4 )); then
             run "Removing the last 4 lines of the .env" bash -lc "head -n -4 '${envfile}' > '${envfile}.tmp' && mv -f '${envfile}.tmp' '${envfile}'"
         fi
-        
-        elif [[ ! -f "${APP_DIR}/.env" ]]; then
+    elif [[ ! -f "${APP_DIR}/.env" ]]; then
         run "Create empty .env" touch "${APP_DIR}/.env"
     fi
     
+
     env_write_value "APP_NAME" "\"DezerX Spartan\""
     env_write_value "APP_ENV" "production"
-    env_write_value "APP_KEY" ""
+    if [[ -n "${APP_KEY}" ]]; then
+        env_write_value "APP_KEY" "${APP_KEY}"
+    else
+        env_write_value "APP_KEY" ""
+    fi
     env_write_value "APP_DEBUG" "false"
     env_write_value "APP_URL" "http://${DOMAIN}"
     env_write_value "LICENSE_KEY" "${LICENSE_KEY}"
@@ -852,6 +870,17 @@ app_install_steps(){
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     app_maintenance_on
     run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force"
+    run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
+    run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
+    run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
+}
+
+app_update_steps(){
+    COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
+    [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
+    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
+    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    app_maintenance_on
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
@@ -925,7 +954,7 @@ SyslogIdentifier=dezerx-worker
 [Install]
 WantedBy=multi-user.target
 EOF"
-    run "Enable & start dezerx.service" bash -lc "systemctl daemon-reload && systemctl enable dezerx.service && systemctl start dezerx.service || true"
+    run "Enable & start dezerx.service" bash -lc "systemctl daemon-reload && systemctl enable dezerx.service && systemctl restart dezerx.service || true"
 }
 
 # ---------------- Certbot ----------------
@@ -1048,11 +1077,11 @@ restore_backups() {
     restore_db_backup
 }
 
-cleanup_old_backups() {
-    find /tmp -name "spartan_backup_*.tar.gz" -type f -mtime +7 -exec rm -f {} \;
-    find /tmp -name "spartan_db_backup_*.sql.gz" -type f -mtime +7 -exec rm -f {} \;
+app_get_dir() {
+    if [[ ! -d "${APP_DIR}" && -z "$(ls -A "$APP_DIR")" ]]; then
+        ask_update_app_dir
+    fi
 }
-
 
 app_get_env() {
     local envfile="${APP_DIR}/.env"
@@ -1066,6 +1095,7 @@ app_get_env() {
         section "Reading existing .env file for configuration"
         DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
+        APP_KEY=$(get_env_value "APP_KEY")
         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
         DB_CONNECTION=$(get_env_value "DB_CONNECTION")
         DB_HOST=$(get_env_value "DB_HOST")
@@ -1178,6 +1208,8 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         fi
     fi
     
+    app_maintenance_off
+
     section "All done!"
     echo "Domain:       ${DOMAIN}"
     echo "App Path:     ${APP_DIR}"
@@ -1200,11 +1232,12 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
 elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
     app_maintenance_on
+    app_get_dir
     app_get_env
 
     # Backup app
     create_backups
-    
+
     # License part
     license_verify
     license_download_and_extract
@@ -1212,7 +1245,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     detect_web_user_group
     app_env_setup
     # Install and set perms
-    if app_install_steps; then
+    if app_update_steps; then
         apply_permissions
         setup_cron
         setup_systemd_queue
@@ -1251,8 +1284,6 @@ elif [[ "$CHOICE" == "update" ]]; then
         die "Update failed, backup restored."
     fi
     
-    # Cleanup old backups
-    cleanup_old_backups
     exit 0
     
 elif [[ "$CHOICE" == "delete" ]]; then
