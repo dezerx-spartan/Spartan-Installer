@@ -152,11 +152,28 @@ start_service(){
     return 1
 }
 
-clean_app_dir(){
-    find "${APP_DIR}" -mindepth 1 \
-    -not -path "${APP_DIR}/public*" \
-    -not -path "${APP_DIR}/storage*" \
-    -exec rm -rf {} +
+prepare_app_dir(){
+    run "Ensuring app directory '${APP_DIR}' exists" bash -lc "mkdir -p '${APP_DIR}'"
+
+    [ "$APP_DIR" = "/" ] && { echo "Refusing to run on /"; return 1; }
+
+    local tmpdir
+    tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
+
+    mv -- "${APP_DIR}/storage" "${tmpdir}/" 2>/dev/null || true
+    mv -- "${APP_DIR}/public" "${tmpdir}/" 2>/dev/null || true
+
+    (
+        shopt -s dotglob nullglob
+        for entry in "${APP_DIR}"/*; do
+            [ "${entry}" = "${tmpdir}" ] && continue
+            rm -fr -- "${entry}"
+        done
+    )
+
+    mv -- "${tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
+    mv -- "${tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
+    rmdir -- "${tmpdir}" 2>/dev/null || true
 }
 
 # ---------------- Menüs ----------------
@@ -520,8 +537,7 @@ license_download_and_extract(){
         SRC="$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)"
     fi
     
-    ensure_app_dir
-    clean_app_dir
+    prepare_app_dir
     section "Sync application to ${APP_DIR}"
     rsync -a "$SRC"/ "${APP_DIR}/"
     
@@ -746,8 +762,6 @@ EOF"
 }
 
 # ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
-ensure_app_dir(){ run "Ensure app directory ${APP_DIR}" bash -lc "mkdir -p '${APP_DIR}/public'"; }
-
 detect_web_user_group(){
     local user="" group="" proc_user pid candidates detection_method=""
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
@@ -1051,6 +1065,7 @@ create_backups(){
 restore_app_backup() {
     if [[ -f "$BACKUP_FILE" ]]; then
         section "Restoring backup from ${BACKUP_FILE}"
+        rm -rf "${APP_DIR}"/*
         tar -xzf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
         echo "Backup restored successfully."
     else
@@ -1240,7 +1255,10 @@ elif [[ "$CHOICE" == "update" ]]; then
 
     # License part
     license_verify
-    license_download_and_extract
+    if ! license_download_and_extract; then
+        restore_backups
+        die "Update failed, backup restored."
+    fi
     
     detect_web_user_group
     app_env_setup
