@@ -182,11 +182,11 @@ ask_app_dir(){
     section "APP_DIR set to: ${APP_DIR}"
 }
 
-ask_update_app_dir(
+ask_update_app_dir(){
     local default_dir="$APP_DIR"
     APP_DIR=$(whiptail --title "$TITLE" --inputbox "Please Provide the path to the application directory (Where spartan is installed)\n\nEdit:" 12 70 "$default_dir" 3>&1 1>&2 2>&3) || exit 1
     section "APP_DIR set to: ${APP_DIR}"
-)
+}
 
 choose_webserver(){
     WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
