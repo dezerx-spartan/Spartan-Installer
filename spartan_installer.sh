@@ -332,8 +332,11 @@ install_nodejs_lts(){
         ;;
         centos|rhel|almalinux|rocky)
             run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
-            if have dnf; then pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
-        else pm_install nodejs || true; fi
+            if have dnf; then 
+                pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
+            else 
+                pm_install nodejs || true
+            fi
         ;;
         *) pm_install nodejs || true ;;
     esac
@@ -344,7 +347,7 @@ install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         pm_install nginx
         run "Starting nginx" systemctl start nginx || true
-        elif [[ "$WEB" == "apache" ]]; then
+    elif [[ "$WEB" == "apache" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu) pm_install apache2 ;;
             fedora|centos|rhel|almalinux|rocky) pm_install httpd ;;
@@ -843,6 +846,7 @@ env_write_value(){
 }
 
 app_env_setup(){
+    APP_KEY=${APP_KEY:-}
     if [[ ! -f "${APP_DIR}/.env" && -f "${APP_DIR}/.env.example" ]]; then
         run "Copy .env.example -> .env" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
         
