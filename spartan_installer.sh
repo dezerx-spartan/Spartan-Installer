@@ -98,10 +98,10 @@ install_essentials(){
     
     case "$DISTRO_ID" in
         debian|ubuntu)
-            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps)
+            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps diffutils)
         ;;
         fedora|centos|rhel|almalinux|rocky)
-            pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie)
+            pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie diffutils)
         ;;
         *) die "Distro not supported $DISTRO_ID" ;;
     esac
@@ -152,28 +152,76 @@ start_service(){
     return 1
 }
 
-prepare_app_dir(){
+app_prepare_dir(){
     run "Ensuring app directory '${APP_DIR}' exists" bash -lc "mkdir -p '${APP_DIR}'"
 
+    [ -z "$APP_DIR" ] && { echo "'${APP_DIR}' is empty no need to delete anything."; return 0; }
     [ "$APP_DIR" = "/" ] && { echo "Refusing to run on /"; return 1; }
 
-    local tmpdir
-    tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
+    update_tmpdir=""
 
-    mv -- "${APP_DIR}/storage" "${tmpdir}/" 2>/dev/null || true
-    mv -- "${APP_DIR}/public" "${tmpdir}/" 2>/dev/null || true
+    if [[ $CHOICE == "update" ]]; then
+        update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
+
+        mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/resources/css/app.css" "${update_tmpdir}/" 2>/dev/null || true
+    fi
 
     (
         shopt -s dotglob nullglob
         for entry in "${APP_DIR}"/*; do
-            [ "${entry}" = "${tmpdir}" ] && continue
+            [ "${entry}" = "${update_tmpdir}" ] && continue
             rm -fr -- "${entry}"
         done
     )
+}
 
-    mv -- "${tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
-    mv -- "${tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
-    rmdir -- "${tmpdir}" 2>/dev/null || true
+app_restore_files(){
+    mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
+    mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
+    mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
+    mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
+    if [[ -f "${update_tmpdir}/app.css" ]]; then
+        mkdir -p "${APP_DIR}/resources/css" 2>/dev/null || { echo "Failed to recreate 'resources/css'"; }
+        mv -- "${update_tmpdir}/app.css" "${APP_DIR}/resources/css/" 2>/dev/null || true
+    fi
+
+    rmdir -- "${update_tmpdir}" 2>/dev/null || true
+}
+
+app_merge_json(){
+    local old="$1"
+    local new="$2"
+    local merged="$3"
+
+    [[ -f "$old" && -f "$new" ]] || { echo "both old and new files need to be present for merge. ($(basename ${old}) -> $(basename ${new})"; return 0; }
+
+    section "Merging: $(basename ${old}) -> $(basename ${new})"
+
+    jq -s '
+        (.[0]) as $old |
+        (.[1]) as $new |
+        reduce ($new | keys[]) as $k ( {}: .[$k] = ($old[$k] // $new[$k]) )
+    ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 0; }
+
+    mv -- "${merged}.tmp" "$merged"
+    section "Merged to ${merged}"
+}
+
+load_env_into_array() {
+    local file="$1"
+    local -n arr_ref="$2"
+
+    [[ -f "$file" ]] || return 0
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo -e "$key" | xargs)
+        value=$(echo -e "$value" | xargs)
+        arr_ref["$key"]="$value"
+    done < "$file"
 }
 
 # ---------------- Menüs ----------------
@@ -540,10 +588,16 @@ license_download_and_extract(){
         SRC="$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)"
     fi
     
-    prepare_app_dir
+    app_prepare_dir
     section "Sync application to ${APP_DIR}"
     rsync -a "$SRC"/ "${APP_DIR}/"
-    
+
+    if [[ $CHOICE == "update" ]]; then
+        app_restore_files
+    elif [[ -d "${update_tmpdir}" ]]
+        rmdir -- "${update_tmpdir}" 2>/dev/null || true
+    fi
+
     [[ -f "${APP_DIR}/composer.json" ]] || die "composer.json missing after extraction; invalid payload?"
     echo "App synced to ${APP_DIR}"
 }
@@ -1102,57 +1156,99 @@ app_get_dir() {
     fi
 }
 
-app_get_env() {
-    local envfile="${APP_DIR}/.env"
+# -- will get removed in future version --
+#
+# app_get_env() {
+#     local envfile="${APP_DIR}/.env"
 
-    get_env_value(){
-        local key=$1 
-        grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
-    }
+#     get_env_value(){
+#         local key=$1 
+#         grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
+#     }
 
-    if [[ -f "$envfile" ]]; then
-        section "Reading existing .env file for configuration"
-        DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
-        LICENSE_KEY=$(get_env_value "LICENSE_KEY")
-        APP_KEY=$(get_env_value "APP_KEY")
-        PRODUCT_ID=$(get_env_value "PRODUCT_ID")
-        DB_CONNECTION=$(get_env_value "DB_CONNECTION")
-        DB_HOST=$(get_env_value "DB_HOST")
-        DB_PORT=$(get_env_value "DB_PORT")
-        DB_NAME=$(get_env_value "DB_DATABASE")
-        DB_USER=$(get_env_value "DB_USERNAME")
-        DB_PASS=$(get_env_value "DB_PASSWORD")
+#     if [[ -f "$envfile" ]]; then
+#         section "Reading existing .env file for configuration"
+#         DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
+#         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
+#         APP_KEY=$(get_env_value "APP_KEY")
+#         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
+#         DB_CONNECTION=$(get_env_value "DB_CONNECTION")
+#         DB_HOST=$(get_env_value "DB_HOST")
+#         DB_PORT=$(get_env_value "DB_PORT")
+#         DB_NAME=$(get_env_value "DB_DATABASE")
+#         DB_USER=$(get_env_value "DB_USERNAME")
+#         DB_PASS=$(get_env_value "DB_PASSWORD")
         
-        DB_CONNECTION=${DB_CONNECTION:-mariadb}
-        DB_ENGINE=${DB_ENGINE:-mariadb}
-        DB_HOST=${DB_HOST:-127.0.0.1}
-        DB_PORT=${DB_PORT:-3306}
-        DB_NAME=${DB_NAME:-dezerx}
-        DB_USER=${DB_USER:-dezer}
-        DB_PASS=${DB_PASS:-}
+#         DB_CONNECTION=${DB_CONNECTION:-mariadb}
+#         DB_ENGINE=${DB_ENGINE:-mariadb}
+#         DB_HOST=${DB_HOST:-127.0.0.1}
+#         DB_PORT=${DB_PORT:-3306}
+#         DB_NAME=${DB_NAME:-dezerx}
+#         DB_USER=${DB_USER:-dezer}
+#         DB_PASS=${DB_PASS:-}
 
-        case "$DB_CONNECTION" in
-            mysql) DB_ENGINE="mysql" ;;
-            mariadb) DB_ENGINE="mariadb" ;;
-            *) DB_ENGINE="mariadb" ;;
-        esac
-
-        if systemctl is-active --quiet nginx 2>/dev/null; then
-            WEB="nginx"
-        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
-            WEB="apache"
-        else
-            die "No supported web server detected (nginx or apache)."
-        fi
+#         case "$DB_CONNECTION" in
+#             mysql) DB_ENGINE="mysql" ;;
+#             mariadb) DB_ENGINE="mariadb" ;;
+#             *) DB_ENGINE="mariadb" ;;
+#         esac
         
-        if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
-            die "Missing required configuration. Ensure all variables are properly set."
-        fi
+#         if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
+#             die "Missing required configuration. Ensure all variables are properly set."
+#         fi
 
-        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
+#         section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
+#     else
+#         section "No .env file found. Default values will be used."
+#     fi
+# }
+
+app_find_web(){
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        WEB="nginx"
+    elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+        WEB="apache"
     else
-        section "No .env file found. Default values will be used."
+        die "No supported web server detected (nginx or apache)."
     fi
+}
+
+app_setup_dir(){
+    merge_env
+    if [[ -f "${APP_DIR}/modules_statuses.json" ]]; then
+        mv -- "${APP_DIR}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.new"
+        app_merge_json "${APP_DIR}/modules_statuses.json.old" "${APP_DIR}/modules_statuses.json.new" "${APP_DIR}/modules_statuses.json"
+    fi
+}
+
+merge_env() {
+    local old_file="${APP_DIR}/.env"
+    local tmpl_file="${APP_DIR}/.env.example"
+    local merged_tmp="${APP_DIR}/.env.merged"
+
+    declare -A OLD_ENV NEW_ENV MERGED_ENV
+
+    load_env_into_array "$old_file" OLD_ENV
+    load_env_into_array "$tmpl_file" NEW_ENV
+
+    while IFS='=' read -r key _; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo -e "$key" | xargs)
+        if [[ -n "${OLD_ENV[$key]+_}" ]]; then
+            MERGED_ENV["$key"]="${OLD_ENV[$key]}"
+        else
+            MERGED_ENV["$key"]="${NEW_ENV[$key]}"
+        fi
+    done < "$tmpl_file"
+
+    {
+        for key in "${!MERGED_ENV[@]}"; do
+            printf "%s=%s\n" "$key" "${MERGED_ENV[$key]}"
+        done
+    } > "$merged_tmp"
+
+    mv -f "$merged_tmp" "$old_file"
+    section ".env merged"
 }
 
 # ---------------- Flow ----------------
@@ -1252,7 +1348,8 @@ elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
     app_maintenance_on
     app_get_dir
-    app_get_env
+
+    app_find_web
 
     # Backup app
     create_backups
@@ -1265,7 +1362,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     fi
     
     detect_web_user_group
-    app_env_setup
+    app_setup_dir
     # Install and set perms
     if app_update_steps; then
         apply_permissions
@@ -1309,9 +1406,6 @@ elif [[ "$CHOICE" == "update" ]]; then
     exit 0
     
 elif [[ "$CHOICE" == "delete" ]]; then
-    # Get all needed variables
-    app_get_env
-    
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
         run "Remove application directory ${APP_DIR}" rm -rf "$APP_DIR"
