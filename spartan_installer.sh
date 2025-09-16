@@ -1156,52 +1156,50 @@ app_get_dir() {
     fi
 }
 
-# -- will get removed in future version --
-#
-# app_get_env() {
-#     local envfile="${APP_DIR}/.env"
+app_get_env() {
+    local envfile="${APP_DIR}/.env"
 
-#     get_env_value(){
-#         local key=$1 
-#         grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
-#     }
+    get_env_value(){
+        local key=$1 
+        grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
+    }
 
-#     if [[ -f "$envfile" ]]; then
-#         section "Reading existing .env file for configuration"
-#         DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
-#         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
-#         APP_KEY=$(get_env_value "APP_KEY")
-#         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
-#         DB_CONNECTION=$(get_env_value "DB_CONNECTION")
-#         DB_HOST=$(get_env_value "DB_HOST")
-#         DB_PORT=$(get_env_value "DB_PORT")
-#         DB_NAME=$(get_env_value "DB_DATABASE")
-#         DB_USER=$(get_env_value "DB_USERNAME")
-#         DB_PASS=$(get_env_value "DB_PASSWORD")
+    if [[ -f "$envfile" ]]; then
+        section "Reading existing .env file for configuration"
+        DOMAIN=$(get_env_value "APP_URL" | sed 's|http[s]*://||' | sed 's|/.*||')
+        LICENSE_KEY=$(get_env_value "LICENSE_KEY")
+        APP_KEY=$(get_env_value "APP_KEY")
+        PRODUCT_ID=$(get_env_value "PRODUCT_ID")
+        DB_CONNECTION=$(get_env_value "DB_CONNECTION")
+        DB_HOST=$(get_env_value "DB_HOST")
+        DB_PORT=$(get_env_value "DB_PORT")
+        DB_NAME=$(get_env_value "DB_DATABASE")
+        DB_USER=$(get_env_value "DB_USERNAME")
+        DB_PASS=$(get_env_value "DB_PASSWORD")
         
-#         DB_CONNECTION=${DB_CONNECTION:-mariadb}
-#         DB_ENGINE=${DB_ENGINE:-mariadb}
-#         DB_HOST=${DB_HOST:-127.0.0.1}
-#         DB_PORT=${DB_PORT:-3306}
-#         DB_NAME=${DB_NAME:-dezerx}
-#         DB_USER=${DB_USER:-dezer}
-#         DB_PASS=${DB_PASS:-}
+        DB_CONNECTION=${DB_CONNECTION:-mariadb}
+        DB_ENGINE=${DB_ENGINE:-mariadb}
+        DB_HOST=${DB_HOST:-127.0.0.1}
+        DB_PORT=${DB_PORT:-3306}
+        DB_NAME=${DB_NAME:-dezerx}
+        DB_USER=${DB_USER:-dezer}
+        DB_PASS=${DB_PASS:-}
 
-#         case "$DB_CONNECTION" in
-#             mysql) DB_ENGINE="mysql" ;;
-#             mariadb) DB_ENGINE="mariadb" ;;
-#             *) DB_ENGINE="mariadb" ;;
-#         esac
+        case "$DB_CONNECTION" in
+            mysql) DB_ENGINE="mysql" ;;
+            mariadb) DB_ENGINE="mariadb" ;;
+            *) DB_ENGINE="mariadb" ;;
+        esac
         
-#         if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
-#             die "Missing required configuration. Ensure all variables are properly set."
-#         fi
+        if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
+            die "Missing required configuration. Ensure all variables are properly set."
+        fi
 
-#         section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
-#     else
-#         section "No .env file found. Default values will be used."
-#     fi
-# }
+        section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
+    else
+        section "No .env file found. Default values will be used."
+    fi
+}
 
 app_find_web(){
     if systemctl is-active --quiet nginx 2>/dev/null; then
@@ -1350,6 +1348,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     app_get_dir
 
     app_find_web
+    app_get_env
 
     # Backup app
     create_backups
