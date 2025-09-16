@@ -594,7 +594,7 @@ license_download_and_extract(){
 
     if [[ $CHOICE == "update" ]]; then
         app_restore_files
-    elif [[ -d "${update_tmpdir}" ]]
+    elif [[ -d "${update_tmpdir}" ]]; then
         rmdir -- "${update_tmpdir}" 2>/dev/null || true
     fi
 
