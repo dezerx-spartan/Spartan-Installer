@@ -1259,7 +1259,7 @@ merge_env() {
     done < "$tmpl_file"
 
     {
-        for key in $(printf '%s\n' "${!MERGED_ENV[@]}"); do
+        for key in $(printf '%s\n' "${!MERGED_ENV[@]}" | LC_ALL=C sort); do
             env_write_value "$key" "${MERGED_ENV[$key]}" "$merged_tmp"
         done
     }
