@@ -942,11 +942,6 @@ app_env_setup(){
 
     env_write_value "APP_NAME" "DezerX Spartan"
     env_write_value "APP_ENV" "production"
-    # if [[ -n "${APP_KEY}" ]]; then
-    #     env_write_value "APP_KEY" "${APP_KEY}"
-    # else
-    #     env_write_value "APP_KEY" ""
-    # fi
     env_write_value "APP_DEBUG" "false"
     env_write_value "APP_URL" "http://${DOMAIN}"
     env_write_value "LICENSE_KEY" "${LICENSE_KEY}"
@@ -1016,7 +1011,7 @@ setup_cron(){
     if have crontab >/dev/null 2>&1; then
         local tmp_file=$(mktemp)
         run "Install cron for scheduler" bash -lc "
-            (crontab -l 2>/dev/null || true) | sed '|${match_regex}|d' > \"${tmp_file}\"
+            (crontab -l 2>/dev/null || true) | sed '\\|${match_regex}|d' > \"${tmp_file}\"
             echo -e \"${cron_line}\" >> \"${tmp_file}\"
             crontab \"${tmp_file}\"
             rm -f \"${tmp_file}\"
@@ -1261,7 +1256,7 @@ merge_env() {
     done < "$tmpl_file"
 
     {
-        for key in $(printf '%s\n' "${!MERGED_ENV[@]}" | LC_ALL=C sort); do
+        for key in $(printf '%s\n' "${!MERGED_ENV[@]}"); do
             env_write_value "$key" "${MERGED_ENV[$key]}" "$merged_tmp"
         done
     }
