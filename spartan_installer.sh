@@ -1170,6 +1170,16 @@ app_get_dir() {
     fi
 }
 
+app_find_web(){
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        WEB="nginx"
+    elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+        WEB="apache"
+    else
+        die "No supported web server detected (nginx or apache)."
+    fi
+}
+
 app_get_var() {
     local envfile="${APP_DIR}/.env"
 
@@ -1209,19 +1219,11 @@ app_get_var() {
             die "Missing required configuration. Ensure all variables are properly set."
         fi
 
+        app_find_web
+
         section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
     else
         section "No .env file found. Default values will be used."
-    fi
-}
-
-app_find_web(){
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        WEB="nginx"
-    elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
-        WEB="apache"
-    else
-        die "No supported web server detected (nginx or apache)."
     fi
 }
 
