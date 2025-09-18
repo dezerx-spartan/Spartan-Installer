@@ -895,7 +895,7 @@ config_php_fpm(){
 
 env_write_value(){
     local key="$1" value="$2"
-    local envfile="${3:-${APP_DIR}/.env}"
+    local env_file="${3:-${APP_DIR}/.env}"
     local needs_quote=false
     local formated
 
@@ -911,13 +911,13 @@ env_write_value(){
         fi
     fi
 
-    [[ ! -f "$envfile" ]] && touch "$envfile"
+    [[ ! -f "$env_file" ]] && touch "$env_file"
 
     section "Writing to .env"
 
-    if grep -qE "^${key}=" "$envfile"; then
+    if grep -qE "^${key}=" "$env_file"; then
         echo -e "Updating ${key}"
-        sed -i -E "s|^${key}=.*|${formated}|g" "$envfile"
+        sed -i -E "s|^${key}=.*|${formated}|g" "$env_file"
     else
         printf '%s\n' "$formated" >> "$env_file"
         echo -e "Adding ${key}"
