@@ -897,18 +897,19 @@ env_write_value(){
     local key="$1" value="$2"
     local envfile="${3:-${APP_DIR}/.env}"
 
-    value="${value//\"/\\\"}"
-
-    if [[ -z "$value" || "$value" =~ [[:space:]]# ]]; then
-        value="\"$value\""
-    fi
+    local escaped_value
+    escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
 
     [[ ! -f "$envfile" ]] && touch "$envfile"
 
+    section "Writing to .env"
+
     if grep -qE "^${key}=" "$envfile"; then
-        run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${value}|g" "$envfile"
+        echo -e "Updating ${key}"
+        sed -i -E "s|^${key}=.*|${key}=${escaped_value}|g" "$envfile"
     else
-        run "Append .env ${key}" echo "${key}=${value}" >> "$envfile"
+        echo -e "Adding ${key}"
+        echo -e "${key}=${escaped_value}" >> "$envfile"
     fi
 }
 
@@ -1169,7 +1170,7 @@ app_get_dir() {
     fi
 }
 
-app_get_env() {
+app_get_var() {
     local envfile="${APP_DIR}/.env"
 
     get_env_value(){
@@ -1233,6 +1234,8 @@ merge_env() {
 
     load_env_into_array "$old_file" OLD_ENV
     load_env_into_array "$tmpl_file" NEW_ENV
+
+    section "Merging .env"
 
     while IFS='=' read -r key _; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
@@ -1358,9 +1361,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
     app_maintenance_on
     app_get_dir
-
-    app_find_web
-    app_get_env
+    app_get_var
 
     # Backup app
     create_backups
