@@ -896,9 +896,20 @@ config_php_fpm(){
 env_write_value(){
     local key="$1" value="$2"
     local envfile="${3:-${APP_DIR}/.env}"
+    local needs_quote=false
+    local formated
 
-    local escaped_value
-    escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+    if [[ "$value" =~ ^\".*\"$ ]]; then
+        formated="${key}=${value}"
+    else
+        if [[ "$value" =~ [[:space:]#\$\"\'\`\=] ]]; then
+            local escaped_value
+            escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g'  -e 's/"/\\"/g')
+            formated="${key}=\"${escaped_value}\""
+        else
+            formated="${key}=${value}"
+        fi
+    fi
 
     [[ ! -f "$envfile" ]] && touch "$envfile"
 
@@ -906,10 +917,10 @@ env_write_value(){
 
     if grep -qE "^${key}=" "$envfile"; then
         echo -e "Updating ${key}"
-        sed -i -E "s|^${key}=.*|${key}=${escaped_value}|g" "$envfile"
+        sed -i -E "s|^${key}=.*|${formated}|g" "$envfile"
     else
+        printf '%s\n' "$formated" >> "$env_file"
         echo -e "Adding ${key}"
-        echo -e "${key}=${escaped_value}" >> "$envfile"
     fi
 }
 
