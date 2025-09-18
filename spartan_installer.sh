@@ -230,6 +230,32 @@ load_env_into_array() {
     done < "$file"
 }
 
+no_apache(){
+    if [[ "$WEB" == "nginx" ]]; then
+        if systemctl status apache2 2>/dev/null; then
+            section "Found a apache cave diver deactivating it."
+            case "$DISTRO_ID" in
+                debian|ubuntu)
+                    run "stopping apache" systemctl stop apache2
+                    run "stopping apache.socket" systemctl stop apache2.socket
+                    run "deactivating apache" systemctl disable apache2
+                    run "deactivating apache.socket" systemctl disable apache2.socket
+                ;;
+                fedora|centos|rhel|almalinux|rocky)
+                    run "stopping apache" systemctl stop httpd
+                    run "stopping apache.socket" systemctl stop httpd.socket
+                    run "deactivating apache" systemctl disable httpd
+                    run "deactivating apache.socket" systemctl disable httpd.socket
+                ;;
+            esac
+        else
+            section "No apache cave diver found"
+        fi
+    else
+        section "No need to deactivate apache skipping"
+    fi
+}
+
 # ---------------- Menüs ----------------
 main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
@@ -1316,6 +1342,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # Now install system stack & app deps
     install_php_stack
     install_webserver
+    no_apache
     install_nodejs_lts
     install_db_engine
     db_create
