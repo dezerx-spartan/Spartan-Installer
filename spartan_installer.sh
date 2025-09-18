@@ -7,7 +7,7 @@ trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COM
 
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
-APP_DIR="/var/www/spartan"            # Default; wird interaktiv abgefragt
+APP_DIR="/var/www/spartan"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
@@ -98,10 +98,10 @@ install_essentials(){
     
     case "$DISTRO_ID" in
         debian|ubuntu)
-            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps)
+            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps diffutils)
         ;;
         fedora|centos|rhel|almalinux|rocky)
-            pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie)
+            pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie diffutils)
         ;;
         *) die "Distro not supported $DISTRO_ID" ;;
     esac
@@ -152,28 +152,131 @@ start_service(){
     return 1
 }
 
-prepare_app_dir(){
+app_prepare_dir(){
     run "Ensuring app directory '${APP_DIR}' exists" bash -lc "mkdir -p '${APP_DIR}'"
 
+    [ -z "$APP_DIR" ] && { echo "'${APP_DIR}' is empty no need to delete anything."; return 0; }
     [ "$APP_DIR" = "/" ] && { echo "Refusing to run on /"; return 1; }
 
-    local tmpdir
-    tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
+    update_tmpdir=""
 
-    mv -- "${APP_DIR}/storage" "${tmpdir}/" 2>/dev/null || true
-    mv -- "${APP_DIR}/public" "${tmpdir}/" 2>/dev/null || true
+    if [[ $CHOICE == "update" ]]; then
+        update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
+
+        mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/resources/css/app.css" "${update_tmpdir}/" 2>/dev/null || true
+    fi
 
     (
         shopt -s dotglob nullglob
         for entry in "${APP_DIR}"/*; do
-            [ "${entry}" = "${tmpdir}" ] && continue
+            [ "${entry}" = "${update_tmpdir}" ] && continue
             rm -fr -- "${entry}"
         done
     )
 
-    mv -- "${tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
-    mv -- "${tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
-    rmdir -- "${tmpdir}" 2>/dev/null || true
+    if [[ $CHOICE == "update" ]]; then
+        mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
+        mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
+        mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
+    fi
+}
+
+app_restore_files(){
+    mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
+    if [[ -f "${update_tmpdir}/app.css" ]]; then
+        mkdir -p "${APP_DIR}/resources/css" 2>/dev/null || { echo "Failed to recreate 'resources/css'"; }
+        mv -- "${update_tmpdir}/app.css" "${APP_DIR}/resources/css/" 2>/dev/null || true
+    fi
+
+    rmdir -- "${update_tmpdir}" 2>/dev/null || true
+}
+
+app_merge_json(){
+    local old="$1"
+    local new="$2"
+    local merged="$3"
+
+    if [[ ! -f "$old" || ! -f "$new" ]]; then
+        echo "both old and new files need to be present for merge. $(basename ${old}) -> $(basename ${new})"
+        return 1
+    fi
+
+    section "Merging: $(basename ${old}) -> $(basename ${new})"
+
+    jq -s '
+        (.[0]) as $old |
+        (.[1]) as $new |
+        reduce ($new | keys[]) as $k ( {}; .[$k] = ($old[$k] // $new[$k]) )
+    ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 0; }
+
+    mv -- "${merged}.tmp" "$merged"
+    section "Merged to ${merged}"
+}
+
+load_env_into_array() {
+    local file="$1"
+    local -n arr_ref="$2"
+
+    [[ -f "$file" ]] || return 0
+    while IFS='=' read -r key value; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+        key=$(echo -e "$key" | xargs)
+        value=$(echo -e "$value" | xargs)
+        arr_ref["$key"]="$value"
+    done < "$file"
+}
+
+no_apache(){
+    [[ "$WEB" != "nginx" ]] && { section "No need to deactivate apache (skipping)"; return 0; }
+
+    local pkg_name svc_name sock_name
+
+    case "$DISTRO_ID" in
+        debian|ubuntu)
+            pkg_name="apache2"
+            svc_name="apache2.service"
+            sock_name="apache2.socket"
+            ;;
+        fedora|centos|rhel|almalinux|rocky)
+            pkg_name="httpd"
+            svc_name="httpd.service"
+            sock_name="httpd.socket"
+            ;;
+        *)
+            section "Unsupported distro ($DISTRO_ID) - cannot detect Apache"
+            return 1
+            ;;
+    esac
+
+    unit_exists() {
+        systemctl list-unit-files "$1" >/dev/null 2>&1
+    }
+
+    package_installed() {
+        case "$DISTRO_ID" in
+            debian|ubuntu) dpkg -s "$1" >/dev/null 2>&1 ;;
+            *) rpm -q "$1" >/dev/null 2>&1 ;;
+        esac
+    }
+
+    if package_installed "$pkg_name" || unit_exists "$svc_name" || unit_exists "$sock_name" 2>/dev/null; then
+        section "Found a apache cave diver deactivating it."
+        if unit_exists "$svc_name"; then
+            run "stopping apache" systemctl stop "$svc_name" || true
+            run "deactivating apache" systemctl disable "$svc_name" || true
+        fi
+
+        if unit_exists "$sock_name"; then
+            run "stopping apache.socket" systemctl stop "$sock_name" || true
+            run "deactivating apache.socket" systemctl disable "$sock_name" || true
+        fi
+    else
+        section "No apache cave diver found"
+    fi
 }
 
 # ---------------- Menüs ----------------
@@ -332,8 +435,11 @@ install_nodejs_lts(){
         ;;
         centos|rhel|almalinux|rocky)
             run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
-            if have dnf; then pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
-        else pm_install nodejs || true; fi
+            if have dnf; then 
+                pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
+            else 
+                pm_install nodejs || true
+            fi
         ;;
         *) pm_install nodejs || true ;;
     esac
@@ -344,7 +450,7 @@ install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         pm_install nginx
         run "Starting nginx" systemctl start nginx || true
-        elif [[ "$WEB" == "apache" ]]; then
+    elif [[ "$WEB" == "apache" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu) pm_install apache2 ;;
             fedora|centos|rhel|almalinux|rocky) pm_install httpd ;;
@@ -390,7 +496,7 @@ install_composer(){
         return 0
     fi
     
-    # Falback to the installer
+    # Fallback to the installer
     local temp_installer
     temp_installer="$(mktemp)"
     
@@ -537,10 +643,16 @@ license_download_and_extract(){
         SRC="$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)"
     fi
     
-    prepare_app_dir
+    app_prepare_dir
     section "Sync application to ${APP_DIR}"
     rsync -a "$SRC"/ "${APP_DIR}/"
-    
+
+    if [[ $CHOICE == "update" ]]; then
+        app_restore_files
+    elif [[ -d "${update_tmpdir}" ]]; then
+        rmdir -- "${update_tmpdir}" 2>/dev/null || true
+    fi
+
     [[ -f "${APP_DIR}/composer.json" ]] || die "composer.json missing after extraction; invalid payload?"
     echo "App synced to ${APP_DIR}"
 }
@@ -834,15 +946,38 @@ config_php_fpm(){
 }
 
 env_write_value(){
-    local key="$1" val="$2"
-    if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
-        run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
+    local key="$1" value="$2"
+    local env_file="${3:-${APP_DIR}/.env}"
+    local needs_quote=false
+    local formated
+
+    if [[ "$value" =~ ^\".*\"$ ]]; then
+        formated="${key}=${value}"
     else
-        run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
+        if [[ "$value" =~ [[:space:]#\$\"\'\`\=] ]]; then
+            local escaped_value
+            escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g'  -e 's/"/\\"/g')
+            formated="${key}=\"${escaped_value}\""
+        else
+            formated="${key}=${value}"
+        fi
+    fi
+
+    [[ ! -f "$env_file" ]] && touch "$env_file"
+
+    section "Writing to .env"
+
+    if grep -qE "^${key}=" "$env_file"; then
+        echo -e "Updating ${key}"
+        sed -i -E "s|^${key}=.*|${formated}|g" "$env_file"
+    else
+        printf '%s\n' "$formated" >> "$env_file"
+        echo -e "Adding ${key}"
     fi
 }
 
 app_env_setup(){
+    APP_KEY=${APP_KEY:-}
     if [[ ! -f "${APP_DIR}/.env" && -f "${APP_DIR}/.env.example" ]]; then
         run "Copy .env.example -> .env" cp "${APP_DIR}/.env.example" "${APP_DIR}/.env"
         
@@ -857,13 +992,8 @@ app_env_setup(){
     fi
     
 
-    env_write_value "APP_NAME" "\"DezerX Spartan\""
+    env_write_value "APP_NAME" "DezerX Spartan"
     env_write_value "APP_ENV" "production"
-    if [[ -n "${APP_KEY}" ]]; then
-        env_write_value "APP_KEY" "${APP_KEY}"
-    else
-        env_write_value "APP_KEY" ""
-    fi
     env_write_value "APP_DEBUG" "false"
     env_write_value "APP_URL" "http://${DOMAIN}"
     env_write_value "LICENSE_KEY" "${LICENSE_KEY}"
@@ -933,7 +1063,7 @@ setup_cron(){
     if have crontab >/dev/null 2>&1; then
         local tmp_file=$(mktemp)
         run "Install cron for scheduler" bash -lc "
-            (crontab -l 2>/dev/null || true) | sed '|${match_regex}|d' > \"${tmp_file}\"
+            (crontab -l 2>/dev/null || true) | sed '\\|${match_regex}|d' > \"${tmp_file}\"
             echo -e \"${cron_line}\" >> \"${tmp_file}\"
             crontab \"${tmp_file}\"
             rm -f \"${tmp_file}\"
@@ -1098,7 +1228,17 @@ app_get_dir() {
     fi
 }
 
-app_get_env() {
+app_find_web(){
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+        WEB="nginx"
+    elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
+        WEB="apache"
+    else
+        die "No supported web server detected (nginx or apache)."
+    fi
+}
+
+app_get_var() {
     local envfile="${APP_DIR}/.env"
 
     get_env_value(){
@@ -1132,18 +1272,12 @@ app_get_env() {
             mariadb) DB_ENGINE="mariadb" ;;
             *) DB_ENGINE="mariadb" ;;
         esac
-
-        if systemctl is-active --quiet nginx 2>/dev/null; then
-            WEB="nginx"
-        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
-            WEB="apache"
-        else
-            die "No supported web server detected (nginx or apache)."
-        fi
         
         if [[ -z "$DOMAIN" || -z "$LICENSE_KEY" || -z "$PRODUCT_ID" || -z "$DB_ENGINE" || -z "$DB_HOST" || -z "$DB_PORT" || -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASS" ]]; then
             die "Missing required configuration. Ensure all variables are properly set."
         fi
+
+        app_find_web
 
         section "Loaded values from .env: Domain=${DOMAIN}, Product ID=${PRODUCT_ID}, DB Engine=${DB_ENGINE}, Web Server=${WEB}"
     else
@@ -1151,6 +1285,45 @@ app_get_env() {
     fi
 }
 
+merge_env() {
+    local old_file="${APP_DIR}/.env"
+    local tmpl_file="${APP_DIR}/.env.example"
+    local merged_tmp=$(mktemp "${APP_DIR}/.env.merged.XXXXXX")
+
+    declare -A OLD_ENV NEW_ENV MERGED_ENV
+
+    load_env_into_array "$old_file" OLD_ENV
+    load_env_into_array "$tmpl_file" NEW_ENV
+
+    section "Merging .env"
+
+    while IFS='=' read -r key _; do
+        [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
+            key=$(echo -e "$key" | xargs)
+        if [[ -n "${OLD_ENV[$key]+_}" ]]; then
+            MERGED_ENV["$key"]="${OLD_ENV[$key]}"
+        else
+            MERGED_ENV["$key"]="${NEW_ENV[$key]}"
+        fi
+    done < "$tmpl_file"
+
+    {
+        for key in $(printf '%s\n' "${!MERGED_ENV[@]}" | LC_ALL=C sort); do
+            env_write_value "$key" "${MERGED_ENV[$key]}" "$merged_tmp"
+        done
+    }
+
+    mv -f "$merged_tmp" "$old_file"
+    section ".env merged"
+}
+
+app_setup_dir(){
+    merge_env
+    if [[ -f "${APP_DIR}/modules_statuses.json" ]]; then
+        mv -- "${APP_DIR}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.new"
+        app_merge_json "${APP_DIR}/modules_statuses.json.old" "${APP_DIR}/modules_statuses.json.new" "${APP_DIR}/modules_statuses.json"
+    fi
+}
 # ---------------- Flow ----------------
 need_root
 detect_os
@@ -1192,6 +1365,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     # Now install system stack & app deps
     install_php_stack
     install_webserver
+    no_apache
     install_nodejs_lts
     install_db_engine
     db_create
@@ -1248,7 +1422,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
     app_maintenance_on
     app_get_dir
-    app_get_env
+    app_get_var
 
     # Backup app
     create_backups
@@ -1261,7 +1435,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     fi
     
     detect_web_user_group
-    app_env_setup
+    app_setup_dir
     # Install and set perms
     if app_update_steps; then
         apply_permissions
@@ -1305,9 +1479,6 @@ elif [[ "$CHOICE" == "update" ]]; then
     exit 0
     
 elif [[ "$CHOICE" == "delete" ]]; then
-    # Get all needed variables
-    app_get_env
-    
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
         run "Remove application directory ${APP_DIR}" rm -rf "$APP_DIR"
