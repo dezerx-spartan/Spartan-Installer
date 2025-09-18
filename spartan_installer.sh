@@ -1360,7 +1360,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     app_get_dir
 
     app_find_web
-#    app_get_env
+    app_get_env
 
     # Backup app
     create_backups
