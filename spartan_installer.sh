@@ -198,13 +198,13 @@ app_merge_json(){
     local merged="$3"
 
     if [[ ! -f "$old" || ! -f "$new" ]]; then
-        echo "both old and new files need to be present for merge. ($(basename ${old}) -> $(basename ${new})"
+        echo "both old and new files need to be present for merge. $(basename ${old}) -> $(basename ${new})"
         return 1
     fi
 
     section "Merging: $(basename ${old}) -> $(basename ${new})"
 
-    if jq -s '
+    jq -s '
         (.[0]) as $old |
         (.[1]) as $new |
         reduce ($new | keys[]) as $k ( {}; .[$k] = ($old[$k] // $new[$k]) )
