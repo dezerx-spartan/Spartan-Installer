@@ -177,12 +177,15 @@ app_prepare_dir(){
             rm -fr -- "${entry}"
         done
     )
+
+    if [[ $CHOICE == "update" ]]; then
+        mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
+        mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
+        mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
+    fi
 }
 
 app_restore_files(){
-    mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
-    mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
-    mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
     mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
     if [[ -f "${update_tmpdir}/app.css" ]]; then
         mkdir -p "${APP_DIR}/resources/css" 2>/dev/null || { echo "Failed to recreate 'resources/css'"; }
