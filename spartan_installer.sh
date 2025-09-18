@@ -7,7 +7,7 @@ trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COM
 
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
-APP_DIR="/var/www/spartan"            # Default; wird interaktiv abgefragt
+APP_DIR="/var/www/spartan"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
@@ -197,14 +197,17 @@ app_merge_json(){
     local new="$2"
     local merged="$3"
 
-    [[ -f "$old" && -f "$new" ]] || { echo "both old and new files need to be present for merge. ($(basename ${old}) -> $(basename ${new})"; return 0; }
+    if [[ ! -f "$old" || ! -f "$new" ]]; then
+        echo "both old and new files need to be present for merge. ($(basename ${old}) -> $(basename ${new})"
+        return 1
+    fi
 
     section "Merging: $(basename ${old}) -> $(basename ${new})"
 
-    jq -s '
+    if jq -s '
         (.[0]) as $old |
         (.[1]) as $new |
-        reduce ($new | keys[]) as $k ( {}: .[$k] = ($old[$k] // $new[$k]) )
+        reduce ($new | keys[]) as $k ( {}; .[$k] = ($old[$k] // $new[$k]) )
     ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 0; }
 
     mv -- "${merged}.tmp" "$merged"
@@ -441,7 +444,7 @@ install_composer(){
         return 0
     fi
     
-    # Falback to the installer
+    # Fallback to the installer
     local temp_installer
     temp_installer="$(mktemp)"
     
@@ -891,11 +894,21 @@ config_php_fpm(){
 }
 
 env_write_value(){
-    local key="$1" val="$2"
-    if grep -qE "^${key}=" "${APP_DIR}/.env" 2>/dev/null; then
-        run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${val}|g" "${APP_DIR}/.env"
+    local key="$1" value="$2"
+    local envfile="${3:-${APP_DIR}/.env}"
+
+    value="${value//\"/\\\"}"
+
+    if [[ -z "$value" || "$value" =~ [[:space:]]# ]]; then
+        value="\"$value\""
+    fi
+
+    [[ ! -f "$envfile" ]] && touch "$envfile"
+
+    if grep -qE "^${key}=" "$envfile"; then
+        run "Update .env ${key}" sed -i "s|^${key}=.*|${key}=${value}|g" "$envfile"
     else
-        run "Append .env ${key}" echo "${key}=${val}" >> "${APP_DIR}/.env"
+        run "Append .env ${key}" echo "${key}=${value}" >> "$envfile"
     fi
 }
 
@@ -915,13 +928,13 @@ app_env_setup(){
     fi
     
 
-    env_write_value "APP_NAME" "\"DezerX Spartan\""
+    env_write_value "APP_NAME" "DezerX Spartan"
     env_write_value "APP_ENV" "production"
-    if [[ -n "${APP_KEY}" ]]; then
-        env_write_value "APP_KEY" "${APP_KEY}"
-    else
-        env_write_value "APP_KEY" ""
-    fi
+    # if [[ -n "${APP_KEY}" ]]; then
+    #     env_write_value "APP_KEY" "${APP_KEY}"
+    # else
+    #     env_write_value "APP_KEY" ""
+    # fi
     env_write_value "APP_DEBUG" "false"
     env_write_value "APP_URL" "http://${DOMAIN}"
     env_write_value "LICENSE_KEY" "${LICENSE_KEY}"
@@ -1211,18 +1224,10 @@ app_find_web(){
     fi
 }
 
-app_setup_dir(){
-    merge_env
-    if [[ -f "${APP_DIR}/modules_statuses.json" ]]; then
-        mv -- "${APP_DIR}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.new"
-        app_merge_json "${APP_DIR}/modules_statuses.json.old" "${APP_DIR}/modules_statuses.json.new" "${APP_DIR}/modules_statuses.json"
-    fi
-}
-
 merge_env() {
     local old_file="${APP_DIR}/.env"
     local tmpl_file="${APP_DIR}/.env.example"
-    local merged_tmp="${APP_DIR}/.env.merged"
+    local merged_tmp=$(mktemp "${APP_DIR}/.env.merged.XXXXXX")
 
     declare -A OLD_ENV NEW_ENV MERGED_ENV
 
@@ -1231,7 +1236,7 @@ merge_env() {
 
     while IFS='=' read -r key _; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-        key=$(echo -e "$key" | xargs)
+            key=$(echo -e "$key" | xargs)
         if [[ -n "${OLD_ENV[$key]+_}" ]]; then
             MERGED_ENV["$key"]="${OLD_ENV[$key]}"
         else
@@ -1240,15 +1245,22 @@ merge_env() {
     done < "$tmpl_file"
 
     {
-        for key in "${!MERGED_ENV[@]}"; do
-            printf "%s=%s\n" "$key" "${MERGED_ENV[$key]}"
+        for key in $(printf '%s\n' "${!MERGED_ENV[@]}" | LC_ALL=C sort); do
+            env_write_value "$key" "${MERGED_ENV[$key]}" "$merged_tmp"
         done
-    } > "$merged_tmp"
+    }
 
     mv -f "$merged_tmp" "$old_file"
     section ".env merged"
 }
 
+app_setup_dir(){
+    merge_env
+    if [[ -f "${APP_DIR}/modules_statuses.json" ]]; then
+        mv -- "${APP_DIR}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.new"
+        app_merge_json "${APP_DIR}/modules_statuses.json.old" "${APP_DIR}/modules_statuses.json.new" "${APP_DIR}/modules_statuses.json"
+    fi
+}
 # ---------------- Flow ----------------
 need_root
 detect_os
