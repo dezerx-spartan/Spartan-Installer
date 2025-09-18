@@ -231,28 +231,51 @@ load_env_into_array() {
 }
 
 no_apache(){
-    if [[ "$WEB" == "nginx" ]]; then
-        if systemctl status apache2 2>/dev/null; then
-            section "Found a apache cave diver deactivating it."
-            case "$DISTRO_ID" in
-                debian|ubuntu)
-                    run "stopping apache" systemctl stop apache2
-                    run "stopping apache.socket" systemctl stop apache2.socket
-                    run "deactivating apache" systemctl disable apache2
-                    run "deactivating apache.socket" systemctl disable apache2.socket
-                ;;
-                fedora|centos|rhel|almalinux|rocky)
-                    run "stopping apache" systemctl stop httpd
-                    run "stopping apache.socket" systemctl stop httpd.socket
-                    run "deactivating apache" systemctl disable httpd
-                    run "deactivating apache.socket" systemctl disable httpd.socket
-                ;;
-            esac
-        else
-            section "No apache cave diver found"
+    [[ "$WEB" != "nginx" ]] && { section "No need to deactivate apache (skipping)"; return 0; }
+
+    local pkg_name svc_name sock_name
+
+    case "$DISTRO_ID" in
+        debian|ubuntu)
+            pkg_name="apache2"
+            svc_name="apache2.service"
+            sock_name="apache2.socket"
+            ;;
+        fedora|centos|rhel|almalinux|rocky)
+            pkg_name="httpd"
+            svc_name="httpd.service"
+            sock_name="httpd.socket"
+            ;;
+        *)
+            section "Unsupported distro ($DISTRO_ID) - cannot detect Apache"
+            return 1
+            ;;
+    esac
+
+    unit_exists() {
+        systemctl list-unit-files "$1" >/dev/null 2>&1
+    }
+
+    package_installed() {
+        case "$DISTRO_ID" in
+            debian|ubuntu) dpkg -s "$1" >/dev/null 2>&1 ;;
+            *) rpm -q "$1" >/dev/null 2>&1 ;;
+        esac
+    }
+
+    if package_installed "$pkg_name" || unit_exists "$svc_name" || unit_exists "$sock_name" 2>/dev/null; then
+        section "Found a apache cave diver deactivating it."
+        if unit_exists "$svc_name"; then
+            run "stopping apache" systemctl stop "$svc_name" || true
+            run "deactivating apache" systemctl disable "$svc_name" || true
+        fi
+
+        if unit_exists "$sock_name"; then
+            run "stopping apache.socket" systemctl stop "$sock_name" || true
+            run "deactivating apache.socket" systemctl disable "$sock_name" || true
         fi
     else
-        section "No need to deactivate apache skipping"
+        section "No apache cave diver found"
     fi
 }
 
