@@ -98,7 +98,7 @@ install_essentials(){
     
     case "$DISTRO_ID" in
         debian|ubuntu)
-            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps diffutils)
+            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps cron diffutils)
         ;;
         fedora|centos|rhel|almalinux|rocky)
             pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie diffutils)
