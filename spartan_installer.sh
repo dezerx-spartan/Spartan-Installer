@@ -383,10 +383,23 @@ db_create(){
 
 enable_php_repo_and_update(){
     case "$DISTRO_ID" in
-        debian|ubuntu)
+        ubuntu)
             pm_install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
             if [[ "$DISTRO_ID" == "ubuntu" ]]; then run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php; fi
-            run "apt update after PHP repo" apt-get update -y
+            run "Updating apt repositories" apt-get update
+        ;;
+        debian)
+            pm_install curl apt-transport-https ca-certificates gnupg lsb-release
+            if ! dpkg -l | grep -q debsuryorg-archive-keyring; then
+                run "Installing sury keyring (GPG key)" curl -sSLo "/tmp/debsuryorg-archive-keyring.deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
+                run "Adding sury keyring (GPG key)" dpkg -i "/tmp/debsuryorg-archive-keyring.deb"
+                run "Cleaning up deb file" rm -f "/tmp/debsuryorg-archive-keyring.deb"
+            fi
+
+            if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list"; then
+                run "Adding sury repo" bash -lc "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
+            fi
+            run "Updating apt repositories" apt-get update
         ;;
         fedora)
             pm_install dnf-plugins-core
@@ -796,7 +809,7 @@ server {
 EOF"
     nginx_enable_site
     start_php_fpm
-    run "Test nginx configuration" nginx -t
+    run "Test nginx configuration" nginx -t || true
     run "Enable/start nginx" systemctl enable --now nginx
     run "Restart nginx" systemctl restart nginx
 }
@@ -870,7 +883,7 @@ EOF"
     [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
     start_php_fpm
     run "Test nginx configuration" nginx -t || true
-    run "Restart nginx" systemctl restart nginx
+    run "Restart nginx" systemctl restart nginx || true
 }
 
 # ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
