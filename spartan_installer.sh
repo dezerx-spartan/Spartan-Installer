@@ -55,7 +55,7 @@ pm_install(){
     case "$DISTRO_ID" in
         debian|ubuntu) run "${desc}" apt-get install -y "$@" ;;
         centos|rhel|almalinux|rocky) if have dnf; then run "${desc}" dnf -y --setopt=install_weak_deps=False install "$@"; else run "${desc}" yum -y install "$@"; fi ;;
-        fedora) run "${desc}" dnf -y install "$@" ;;
+        fedora) run "${desc}" dnf -y --setopt=install_weak_deps=False install "$@" ;;
         *) die "Unsupported distro for package install: $DISTRO_ID" ;;
     esac
 }
@@ -391,7 +391,7 @@ enable_php_repo_and_update(){
         debian)
             pm_install curl apt-transport-https ca-certificates gnupg lsb-release
             if ! dpkg -l | grep -q debsuryorg-archive-keyring; then
-                run "Installing sury keyring (GPG key)" curl -sSLo "/tmp/debsuryorg-archive-keyring.deb" https://packages.sury.org/debsuryorg-archive-keyring.deb
+                run "Installing sury keyring (GPG key)" curl -SLo "/tmp/debsuryorg-archive-keyring.deb" https://packages.sury.org/debsuryorg-archive-keyring.deb >/dev/null
                 run "Adding sury keyring (GPG key)" dpkg -i "/tmp/debsuryorg-archive-keyring.deb"
                 run "Cleaning up deb file" rm -f "/tmp/debsuryorg-archive-keyring.deb"
             fi
@@ -461,7 +461,45 @@ install_nodejs_lts(){
 
 install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
-        pm_install nginx
+        case "$DISTRO_ID" in
+            debian|ubuntu)
+                run "Adding nginx signing key" curl -SLo https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+                run "Using nginx mainline packages as default" echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
+                http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx" \
+                | sudo tee /etc/apt/sources.list.d/nginx.list
+                run "Setting up nginx repository pinning" echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" \
+                | sudo tee /etc/apt/preferences.d/99nginx
+                
+                run "Updating apt repositories" apt-get update
+                pm_install nginx
+            ;;
+            fedora)
+                pm_install nginx
+            ;;
+            centos|rhel|almalinux|rocky)
+                run "Installing yum-utils" yum install yum-utils
+                
+                run "Creating /etc/yum.repos.d/nginx.repo" bash -lc " cat > '/etc/yum.repos.d/nginx.repo' <<'EOF'
+[nginx-stable]
+name=nginx stable repo
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://nginx.org/keys/nginx_signing.key
+module_hotfixes=true
+
+[nginx-mainline]
+name=nginx mainline repo
+baseurl=http://nginx.org/packages/mainline/centos/$releasever/$basearch/
+gpgcheck=1
+enabled=0
+gpgkey=https://nginx.org/keys/nginx_signing.key
+module_hotfixes=true
+EOF"
+                run "Enabling nginx mainline packages" yum-config-manager --enable nginx-mainline
+                run "installing nginx" sudo yum install nginx
+            ;;
+        esac
         run "Starting nginx" systemctl start nginx || true
     elif [[ "$WEB" == "apache" ]]; then
         case "$DISTRO_ID" in
