@@ -463,7 +463,7 @@ install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu)
-                run "Adding nginx signing key" curl -SLo https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+                run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
                 run "Using nginx mainline packages as default" echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
                 http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx" \
                 | sudo tee /etc/apt/sources.list.d/nginx.list
