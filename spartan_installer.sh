@@ -383,11 +383,6 @@ db_create(){
 
 enable_php_repo_and_update(){
     case "$DISTRO_ID" in
-        ubuntu)
-            pm_install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
-            if [[ "$DISTRO_ID" == "ubuntu" ]]; then run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php; fi
-            run "Updating apt repositories" apt-get update
-        ;;
         debian)
             pm_install curl apt-transport-https ca-certificates gnupg lsb-release
             if ! dpkg -l | grep -q debsuryorg-archive-keyring; then
@@ -399,6 +394,11 @@ enable_php_repo_and_update(){
             if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list"; then
                 run "Adding sury repo" bash -lc "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
             fi
+            run "Updating apt repositories" apt-get update
+        ;;
+        ubuntu)
+            pm_install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
+            if [[ "$DISTRO_ID" == "ubuntu" ]]; then run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php; fi
             run "Updating apt repositories" apt-get update
         ;;
         fedora)
