@@ -464,12 +464,17 @@ install_webserver(){
         case "$DISTRO_ID" in
             debian|ubuntu)
                 run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
-                run "Using nginx mainline packages as default" echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
-                http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx" \
-                | sudo tee /etc/apt/sources.list.d/nginx.list
-                run "Setting up nginx repository pinning" echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" \
-                | sudo tee /etc/apt/preferences.d/99nginx
-                
+                run "Using nginx mainline packages as default" bash -lc "cat > '/etc/apt/sources.list.d/nginx.list' <<'EOF'
+deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx
+EOF"
+
+                run "Setting up nginx repository pinning" bash -lc "cat > '/etc/apt/preferences.d/99nginx' << 'EOF'
+Package: *
+Pin: origin nginx.org
+Pin: release o=nginx
+Pin-Priority: 900
+EOF"
+
                 run "Updating apt repositories" apt-get update
                 pm_install nginx
             ;;
