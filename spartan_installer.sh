@@ -725,12 +725,12 @@ restart_php_fpm(){
     if [[ -n "$svc" ]]; then run "Restart ${svc}" systemctl restart "$svc" || true; else run "Restart php-fpm (generic)" systemctl restart php-fpm || true; fi
 }
 php_fpm_socket(){
-    for s in /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
+    for s in /run/php/php"$(php_minor)"-fpm.sock /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
         [[ -S "$s" ]] && { echo "unix:$s"; return 0; }
     done
     echo "unix:/run/php/php-fpm.sock"
 }
-php_fpm_conf(){
+php_fpm_find_conf(){
     local candidates=()
     
     case "$DISTRO_ID" in
@@ -995,9 +995,11 @@ detect_web_user_group(){
 }
 
 config_php_fpm(){
-    local sock; sock="$(php_fpm_conf)"
-    run "Updating user to ${APP_USER} in: ${sock}" sed -i "s|^user = .*|user = ${APP_USER}|" "${sock}"
-    run "Updating user to ${APP_GROUP} in: ${sock}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${sock}"
+    local cfg; cfg="$(php_fpm_find_conf)"
+    local sock; sock="$(php_fpm_socket)"
+    run "Updating user to ${APP_USER} in: ${cfg}" sed -i "s|^user = .*|user = ${APP_USER}|" "${cfg}"
+    run "Updating user to ${APP_GROUP} in: ${cfg}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${cfg}"
+    run "Updating user/groupe to ${APP_USER}:${APP_GROUP} for: ${sock}" chown -R "${APP_USER}:${APP_GROUP}" "${sock}"
     restart_php_fpm
 }
 
@@ -1385,6 +1387,8 @@ need_root
 detect_os
 pm_update_upgrade 0
 install_essentials
+
+echo -e "Debug: Script version 1.2.2-dev"
 
 main_menu
 
