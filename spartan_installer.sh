@@ -1191,7 +1191,7 @@ EOF"
 }
 
 # ---------------- Certbot ----------------
-ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" --yes-button "Install" --no-button "Later" --extra-button --extra-label "Assume" 10 70; }
+ask_certbot(){ whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)"; }
 
 install_certbot_pkgs(){
     case "$DISTRO_ID" in
@@ -1474,20 +1474,21 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_systemd_queue
     
     configure_nginx_http_only
+    certbot_choice="later"
     certbot_choice=$(ask_certbot)
 
     if [[ "$WEB" == "nginx" ]]; then
         case "$certbot_choice" in
-            0)
+            install)
                 install_certbot_pkgs
                 run_certbot_webroot
                 configure_nginx_ssl
                 flip_app_url_to_https
                 ;;
-            1)
+            later)
                 section "Chosed HTTP only."
                 ;;
-            3)
+            assume)
                 section "Assuming SSL – base config for HTTPS."
                 install_certbot_pkgs
                 configure_nginx_ssl
@@ -1499,15 +1500,15 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
         esac
     else
         case "$certbot_choice" in
-            0)
+            install)
                 install_certbot_pkgs
                 run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
                 flip_app_url_to_https
                 ;;
-            1)
+            later)
                 section "User chose to install SSL later (Apache)."
                 ;;
-            3)
+            assume)
                 section "Assuming SSL template for Apache – enabling SSL vhost"
                 install_certbot_pkgs
                 flip_app_url_to_https
