@@ -1191,7 +1191,6 @@ EOF"
 }
 
 # ---------------- Certbot ----------------
-ask_certbot(){ whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)"; }
 
 install_certbot_pkgs(){
     case "$DISTRO_ID" in
@@ -1474,7 +1473,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_systemd_queue
     
     configure_nginx_http_only
-    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)"; 3>&1 1>&2 2>&3) || true
+    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)" 3>&1 1>&2 2>&3) || true
 
     if [[ "$WEB" == "nginx" ]]; then
         case "$certbot_choice" in
