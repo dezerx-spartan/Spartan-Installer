@@ -931,9 +931,36 @@ EOF"
 
 # ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
 detect_web_user_group(){
-    local user="" group="" proc_user pid candidates detection_method=""
+    local user="" group="" proc_user pid candidates conf_file detection_method=""
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
     
+
+    if [[ "$WEB" == "nginx" ]]; then
+        conf_file=(/etc/nginx/nginx.conf)
+        for cfg in "${conf_file[@]}"; do
+            [[ -f "$cfg" ]] || continue
+            user="$(grep -i '^[[:space:]]*user[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            group="$(grep -i '^[[:space:]]*user[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $3}' | tr -d ';' || true)"
+            [[ -z "$group" ]] && group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+            if [[ -n "$user" ]]; then
+                detection_method="config file"
+                break
+            fi
+        done
+    else
+        conf_file=(/etc/apache2/apache2.conf /etc/httpd/conf/httpd.conf)
+        for cfg in "${conf_file[@]}"; do
+            [[ -f "$cfg" ]] || continue
+            user="$(grep -i '^[[:space:]]*User[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            group="$(grep -i '^[[:space:]]*Group[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            [[ -z "$group" ]] && group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+            if [[ -n "$user" ]]; then
+                detection_method="config file"
+                break
+            fi
+        done
+    fi
+
     if [[ "$WEB" == "nginx" ]]; then
         candidates=(www-data nginx www)
     else
@@ -941,34 +968,36 @@ detect_web_user_group(){
     fi
     
     # Get user from pid using systemctl and group using id
-    if command -v systemctl >/dev/null 2>&1; then
-        for svc in "${candidates[@]}"; do
-            if systemctl is-active --quiet "$svc" >/dev/null 2>&1; then
-                if ! systemctl list-unit-files --type=service --all | grep -qw "${svc}.service"; then
-                    continue
-                fi
-                
-                pid="$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)"
-                if [[ -n "$pid" && "$pid" -gt 0 ]]; then
-                    user="$(ps -o user= -p "$pid" 2>/dev/null | awk '{print $1}' || true)"
-                fi
-                
-                if [[ "$user" == "root" || -z "$user" ]]; then
-                    if command -v pgrep >/dev/null 2>&1 && pgrep -x "$svc" >/dev/null 2>&1; then
-                        proc_user="$(ps -o user= -C "$svc" 2>/dev/null | awk '{print $1}' | grep -v "^root$" | head -n1 || true)"
-                        [[ -n $proc_user ]] && user="$proc_user"
+    if [[ -z "${user}" || -z "${group}" ]]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            for svc in "${candidates[@]}"; do
+                if systemctl is-active --quiet "$svc" >/dev/null 2>&1; then
+                    if ! systemctl list-unit-files --type=service --all | grep -qw "${svc}.service"; then
+                        continue
+                    fi
+                    
+                    pid="$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)"
+                    if [[ -n "$pid" && "$pid" -gt 0 ]]; then
+                        user="$(ps -o user= -p "$pid" 2>/dev/null | awk '{print $1}' || true)"
+                    fi
+                    
+                    if [[ "$user" == "root" || -z "$user" ]]; then
+                        if command -v pgrep >/dev/null 2>&1 && pgrep -x "$svc" >/dev/null 2>&1; then
+                            proc_user="$(ps -o user= -C "$svc" 2>/dev/null | awk '{print $1}' | grep -v "^root$" | head -n1 || true)"
+                            [[ -n $proc_user ]] && user="$proc_user"
+                        fi
+                    fi
+                    
+                    if [[ -n "$user" ]]; then
+                        group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+                        detection_method="candidates + systemctl"
+                        break
                     fi
                 fi
-                
-                if [[ -n "$user" ]]; then
-                    group="$(id -gn "$user" 2>/dev/null || echo "$user")"
-                    detection_method="candidates + systemctl"
-                    break
-                fi
-            fi
-        done
+            done
+        fi
     fi
-    
+
     # Fallback to id if systemctl isn't active/installed
     if [[ -z "${user}" || -z "${group}" ]]; then
         for u in "${candidates[@]}"; do
