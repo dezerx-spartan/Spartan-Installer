@@ -935,7 +935,7 @@ detect_web_user_group(){
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
     
     if [[ "$WEB" == "nginx" ]]; then
-        candidates=(nginx www-data www)
+        candidates=(www-data nginx www)
     else
         candidates=(apache2 httpd apache)
     fi
