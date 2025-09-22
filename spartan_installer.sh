@@ -999,7 +999,7 @@ config_php_fpm(){
     local sock; sock="$(php_fpm_socket)"
     run "Updating user to ${APP_USER} in: ${cfg}" sed -i "s|^user = .*|user = ${APP_USER}|" "${cfg}"
     run "Updating user to ${APP_GROUP} in: ${cfg}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${cfg}"
-    run "Updating user/groupe to ${APP_USER}:${APP_GROUP} for: ${sock}" chown -R "${APP_USER}:${APP_GROUP}" "${sock}"
+    run "Updating user/groupe to ${APP_USER}:${APP_GROUP} for: ${sock}" chown -R "${APP_USER}:${APP_GROUP}" "${sock#unix:}"
     restart_php_fpm
 }
 
