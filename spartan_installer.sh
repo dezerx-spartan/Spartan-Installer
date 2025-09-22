@@ -1474,8 +1474,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_systemd_queue
     
     configure_nginx_http_only
-    certbot_choice="later"
-    certbot_choice=$(ask_certbot)
+    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)"; 3>&1 1>&2 2>&3) || true
 
     if [[ "$WEB" == "nginx" ]]; then
         case "$certbot_choice" in
