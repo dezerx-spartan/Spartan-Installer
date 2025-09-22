@@ -310,8 +310,8 @@ ask_update_app_dir(){
 
 choose_webserver(){
     WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
-        "nginx"  "Nginx + PHP-FPM (+ Node.js LTS)" ON \
-        "apache" "Apache + PHP-FPM (+ Node.js LTS)" OFF \
+        "nginx"  "Nginx (recommended)" ON \
+        "apache" "Apache (not a option)" OFF \
     3>&1 1>&2 2>&3) || exit 1
     section "Web server: ${WEB}"
 }
@@ -1191,7 +1191,7 @@ EOF"
 }
 
 # ---------------- Certbot ----------------
-ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" 10 70; }
+ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" --yes-button "Install" --no-button "Later" --extra-button --extra-label "Assume" 10 70; }
 
 install_certbot_pkgs(){
     case "$DISTRO_ID" in
@@ -1429,6 +1429,7 @@ if [[ "$CHOICE" == "install" ]]; then
     ask_license_key
     ask_app_dir
     choose_webserver
+    [[ "$WEB" == "apache" ]] && exit 1
     choose_ioncube
     choose_db_engine
     db_collect
@@ -1472,20 +1473,49 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_cron
     setup_systemd_queue
     
+    configure_nginx_http_only
+    certbot_choice=$(ask_certbot)
+
     if [[ "$WEB" == "nginx" ]]; then
-        configure_nginx_http_only
-        if ask_certbot; then
-            install_certbot_pkgs
-            run_certbot_webroot
-            configure_nginx_ssl
-            flip_app_url_to_https
-        fi
+        case "$certbot_choice" in
+            0)
+                install_certbot_pkgs
+                run_certbot_webroot
+                configure_nginx_ssl
+                flip_app_url_to_https
+                ;;
+            1)
+                section "Chosed HTTP only."
+                ;;
+            3)
+                section "Assuming SSL – base config for HTTPS."
+                install_certbot_pkgs
+                configure_nginx_ssl
+                flip_app_url_to_https
+                ;;
+            *)
+                section "unexpected response – skipping SSL setup."
+                ;;
+        esac
     else
-        if ask_certbot; then
-            install_certbot_pkgs
-            run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
-            flip_app_url_to_https
-        fi
+        case "$certbot_choice" in
+            0)
+                install_certbot_pkgs
+                run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
+                flip_app_url_to_https
+                ;;
+            1)
+                section "User chose to install SSL later (Apache)."
+                ;;
+            3)
+                section "Assuming SSL template for Apache – enabling SSL vhost"
+                install_certbot_pkgs
+                flip_app_url_to_https
+                ;;
+            *)   section "Dialog cancelled – skipping Apache SSL setup."
+                ;;
+        esac
+
     fi
     
     app_maintenance_off
@@ -1537,7 +1567,7 @@ elif [[ "$CHOICE" == "update" ]]; then
         if [[ "$WEB" == "nginx" ]]; then
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
-            elif [[ "$WEB" == "apache" ]]; then
+        elif [[ "$WEB" == "apache" ]]; then
             run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
         else
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
