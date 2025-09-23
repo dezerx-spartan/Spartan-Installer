@@ -1515,7 +1515,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
             assume)
                 section "Assuming SSL – base config for HTTPS."
                 install_certbot_pkgs
-
+                create_self_signed_certs
                 configure_nginx_ssl
                 flip_app_url_to_https
                 ;;
