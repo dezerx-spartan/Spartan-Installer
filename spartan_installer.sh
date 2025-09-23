@@ -291,9 +291,13 @@ main_menu(){
 }
 
 ask_domain(){
+    local new_domain
     while :; do
-        DOMAIN=$(whiptail --title "$TITLE" --inputbox "Enter your primary domain (e.g. example.com)\nThis will be used for vHost, APP_URL and SSL." 10 70 "" 3>&1 1>&2 2>&3) || exit 1
-        [[ -n "$DOMAIN" ]] && break
+        new_domain=$(whiptail --title "$TITLE" --inputbox "Enter your primary domain (e.g. example.com)\nThis will be used for vHost, APP_URL and SSL." 10 70 "" 3>&1 1>&2 2>&3) || exit 1
+        if [[ -n "$new_domain" ]]; then
+            DOMAIN="${new_domain}"
+            break
+        fi
         whiptail --title "$TITLE" --msgbox "Domain is required." 8 50
     done
     section "Domain set to: ${DOMAIN}"
