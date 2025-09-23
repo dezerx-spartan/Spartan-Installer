@@ -1444,7 +1444,7 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-echo -e "Script version 1.2.3-hotfix"
+echo -e "Script version 1.2.1-beta"
 
 main_menu
 
