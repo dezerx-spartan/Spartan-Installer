@@ -210,10 +210,11 @@ app_merge_json(){
     section "Merging: $(basename ${old}) -> $(basename ${new})"
 
     jq -s '
-        (.[0]) as $old |
-        (.[1]) as $new |
-        reduce ($new | keys[]) as $k ( {}; .[$k] = ($old[$k] // $new[$k]) )
-    ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 0; }
+        .[0] as $old |
+        .[1] as $new |
+        ( ($old|keys) + ($new|keys) | unique ) as $ks |
+        reduce $ks[] as $k ( {}; .[$k] = ( if ($old | has($k)) then $old[$k] else $new[$k] end ) )
+    ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 1; }
 
     mv -- "${merged}.tmp" "$merged"
     section "Merged to ${merged}"
@@ -1582,9 +1583,8 @@ elif [[ "$CHOICE" == "update" ]]; then
     fi
     
     detect_web_user_group
-    app_setup_dir
     # Install and set perms
-    if app_update_steps; then
+    if app_setup_dir && app_update_steps; then
         apply_permissions
         setup_cron
         setup_systemd_queue
