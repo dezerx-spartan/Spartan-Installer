@@ -283,7 +283,7 @@ no_apache(){
 
 # ---------------- Menüs ----------------
 main_menu(){
-    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
+    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 70 3 \
         "install" "Install DezerX Spartan" \
         "update" "Update DezerX Spartan" \
     "delete" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
@@ -1444,7 +1444,7 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-echo -e "Debug: Script version 1.2.2-1-dev"
+echo -e "Script version 1.2.3-hotfix"
 
 main_menu
 
