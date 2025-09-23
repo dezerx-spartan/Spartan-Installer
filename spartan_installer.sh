@@ -8,6 +8,8 @@ trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COM
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 APP_DIR="/var/www/spartan"
+DOMAIN="example.dezerx.com"
+CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
@@ -55,7 +57,7 @@ pm_install(){
     case "$DISTRO_ID" in
         debian|ubuntu) run "${desc}" apt-get install -y "$@" ;;
         centos|rhel|almalinux|rocky) if have dnf; then run "${desc}" dnf -y --setopt=install_weak_deps=False install "$@"; else run "${desc}" yum -y install "$@"; fi ;;
-        fedora) run "${desc}" dnf -y install "$@" ;;
+        fedora) run "${desc}" dnf -y --setopt=install_weak_deps=False install "$@" ;;
         *) die "Unsupported distro for package install: $DISTRO_ID" ;;
     esac
 }
@@ -98,7 +100,7 @@ install_essentials(){
     
     case "$DISTRO_ID" in
         debian|ubuntu)
-            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps diffutils)
+            pkgs=(curl apt-transport-https ca-certificates gnupg lsb-release jq unzip rsync tar file openssl procps cron diffutils)
         ;;
         fedora|centos|rhel|almalinux|rocky)
             pkgs=(curl ca-certificates gnupg jq unzip rsync tar file openssl procps cronie diffutils)
@@ -281,7 +283,7 @@ no_apache(){
 
 # ---------------- Menüs ----------------
 main_menu(){
-    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 15 70 2 \
+    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 70 3 \
         "install" "Install DezerX Spartan" \
         "update" "Update DezerX Spartan" \
     "delete" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
@@ -310,8 +312,8 @@ ask_update_app_dir(){
 
 choose_webserver(){
     WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
-        "nginx"  "Nginx + PHP-FPM (+ Node.js LTS)" ON \
-        "apache" "Apache + PHP-FPM (+ Node.js LTS)" OFF \
+        "nginx"  "Nginx (recommended)" ON \
+        "apache" "Apache (not a option)" OFF \
     3>&1 1>&2 2>&3) || exit 1
     section "Web server: ${WEB}"
 }
@@ -383,10 +385,23 @@ db_create(){
 
 enable_php_repo_and_update(){
     case "$DISTRO_ID" in
-        debian|ubuntu)
+        debian)
+            pm_install curl apt-transport-https ca-certificates gnupg lsb-release
+            if ! dpkg -l | grep -q debsuryorg-archive-keyring; then
+                run "Installing sury keyring (GPG key)" curl -SLo "/tmp/debsuryorg-archive-keyring.deb" https://packages.sury.org/debsuryorg-archive-keyring.deb >/dev/null
+                run "Adding sury keyring (GPG key)" dpkg -i "/tmp/debsuryorg-archive-keyring.deb"
+                run "Cleaning up deb file" rm -f "/tmp/debsuryorg-archive-keyring.deb"
+            fi
+
+            if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list"; then
+                run "Adding sury repo" bash -lc "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
+            fi
+            run "Updating apt repositories" apt-get update
+        ;;
+        ubuntu)
             pm_install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
             if [[ "$DISTRO_ID" == "ubuntu" ]]; then run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php; fi
-            run "apt update after PHP repo" apt-get update -y
+            run "Updating apt repositories" apt-get update
         ;;
         fedora)
             pm_install dnf-plugins-core
@@ -448,7 +463,50 @@ install_nodejs_lts(){
 
 install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
-        pm_install nginx
+        case "$DISTRO_ID" in
+            debian|ubuntu)
+                run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+                run "Using nginx mainline packages as default" bash -lc "cat > '/etc/apt/sources.list.d/nginx.list' <<'EOF'
+deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx
+EOF"
+
+                run "Setting up nginx repository pinning" bash -lc "cat > '/etc/apt/preferences.d/99nginx' << 'EOF'
+Package: *
+Pin: origin nginx.org
+Pin: release o=nginx
+Pin-Priority: 900
+EOF"
+
+                run "Updating apt repositories" apt-get update
+                pm_install nginx
+            ;;
+            fedora)
+                pm_install nginx
+            ;;
+            centos|rhel|almalinux|rocky)
+                run "Installing yum-utils" yum install yum-utils
+                
+                run "Creating /etc/yum.repos.d/nginx.repo" bash -lc " cat > '/etc/yum.repos.d/nginx.repo' <<'EOF'
+[nginx-stable]
+name=nginx stable repo
+baseurl=http://nginx.org/packages/centos/$releasever/$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://nginx.org/keys/nginx_signing.key
+module_hotfixes=true
+
+[nginx-mainline]
+name=nginx mainline repo
+baseurl=http://nginx.org/packages/mainline/centos/$releasever/$basearch/
+gpgcheck=1
+enabled=0
+gpgkey=https://nginx.org/keys/nginx_signing.key
+module_hotfixes=true
+EOF"
+                run "Enabling nginx mainline packages" yum-config-manager --enable nginx-mainline
+                run "installing nginx" sudo yum install nginx
+            ;;
+        esac
         run "Starting nginx" systemctl start nginx || true
     elif [[ "$WEB" == "apache" ]]; then
         case "$DISTRO_ID" in
@@ -669,12 +727,12 @@ restart_php_fpm(){
     if [[ -n "$svc" ]]; then run "Restart ${svc}" systemctl restart "$svc" || true; else run "Restart php-fpm (generic)" systemctl restart php-fpm || true; fi
 }
 php_fpm_socket(){
-    for s in /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
+    for s in /run/php/php"$(php_minor)"-fpm.sock /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
         [[ -S "$s" ]] && { echo "unix:$s"; return 0; }
     done
     echo "unix:/run/php/php-fpm.sock"
 }
-php_fpm_conf(){
+php_fpm_find_conf(){
     local candidates=()
     
     case "$DISTRO_ID" in
@@ -796,7 +854,7 @@ server {
 EOF"
     nginx_enable_site
     start_php_fpm
-    run "Test nginx configuration" nginx -t
+    run "Test nginx configuration" nginx -t || true
     run "Enable/start nginx" systemctl enable --now nginx
     run "Restart nginx" systemctl restart nginx
 }
@@ -828,8 +886,8 @@ server {
 
     sendfile off;
 
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_certificate ${CERT_DIR}/fullchain.pem;
+    ssl_certificate_key ${CERT_DIR}/privkey.pem;
     ssl_session_cache shared:SSL:10m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
@@ -870,49 +928,78 @@ EOF"
     [[ "$NGINX_MODE" == "debian" ]] && run "Enable site (symlink)" nginx_enable_site
     start_php_fpm
     run "Test nginx configuration" nginx -t || true
-    run "Restart nginx" systemctl restart nginx
+    run "Restart nginx" systemctl restart nginx || true
 }
 
 # ---------------- APP bootstrap (.env, composer, npm, artisan) ----------------
 detect_web_user_group(){
-    local user="" group="" proc_user pid candidates detection_method=""
+    local user="" group="" proc_user pid candidates conf_file detection_method=""
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
     
+
     if [[ "$WEB" == "nginx" ]]; then
-        candidates=(nginx www-data www)
+        conf_file=(/etc/nginx/nginx.conf)
+        for cfg in "${conf_file[@]}"; do
+            [[ -f "$cfg" ]] || continue
+            user="$(grep -i '^[[:space:]]*user[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            group="$(grep -i '^[[:space:]]*user[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $3}' | tr -d ';' || true)"
+            [[ -z "$group" ]] && group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+            if [[ -n "$user" ]]; then
+                detection_method="config file"
+                break
+            fi
+        done
+    else
+        conf_file=(/etc/apache2/apache2.conf /etc/httpd/conf/httpd.conf)
+        for cfg in "${conf_file[@]}"; do
+            [[ -f "$cfg" ]] || continue
+            user="$(grep -i '^[[:space:]]*User[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            group="$(grep -i '^[[:space:]]*Group[[:space:]]' ${cfg} | grep -v '^[[:space:]]*#' | awk '{print $2}' | tr -d ';' || true)"
+            [[ -z "$group" ]] && group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+            if [[ -n "$user" ]]; then
+                detection_method="config file"
+                break
+            fi
+        done
+    fi
+
+    if [[ "$WEB" == "nginx" ]]; then
+        candidates=(www-data nginx www)
     else
         candidates=(apache2 httpd apache)
     fi
     
     # Get user from pid using systemctl and group using id
-    if command -v systemctl >/dev/null 2>&1; then
-        for svc in "${candidates[@]}"; do
-            if systemctl is-active --quiet "$svc" >/dev/null 2>&1; then
-                if ! systemctl list-unit-files --type=service --all | grep -qw "${svc}.service"; then
-                    continue
-                fi
-                
-                pid="$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)"
-                if [[ -n "$pid" && "$pid" -gt 0 ]]; then
-                    user="$(ps -o user= -p "$pid" 2>/dev/null | awk '{print $1}' || true)"
-                fi
-                
-                if [[ "$user" == "root" || -z "$user" ]]; then
-                    if command -v pgrep >/dev/null 2>&1 && pgrep -x "$svc" >/dev/null 2>&1; then
-                        proc_user="$(ps -o user= -C "$svc" 2>/dev/null | awk '{print $1}' | grep -v "^root$" | head -n1 || true)"
-                        [[ -n $proc_user ]] && user="$proc_user"
+    if [[ -z "${user}" || -z "${group}" ]]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            for svc in "${candidates[@]}"; do
+                if systemctl is-active --quiet "$svc" >/dev/null 2>&1; then
+                    if ! systemctl list-unit-files --type=service --all | grep -qw "${svc}.service"; then
+                        continue
+                    fi
+                    
+                    pid="$(systemctl show -p MainPID --value "$svc" 2>/dev/null || true)"
+                    if [[ -n "$pid" && "$pid" -gt 0 ]]; then
+                        user="$(ps -o user= -p "$pid" 2>/dev/null | awk '{print $1}' || true)"
+                    fi
+                    
+                    if [[ "$user" == "root" || -z "$user" ]]; then
+                        if command -v pgrep >/dev/null 2>&1 && pgrep -x "$svc" >/dev/null 2>&1; then
+                            proc_user="$(ps -o user= -C "$svc" 2>/dev/null | awk '{print $1}' | grep -v "^root$" | head -n1 || true)"
+                            [[ -n $proc_user ]] && user="$proc_user"
+                        fi
+                    fi
+                    
+                    if [[ -n "$user" ]]; then
+                        group="$(id -gn "$user" 2>/dev/null || echo "$user")"
+                        detection_method="candidates + systemctl"
+                        break
                     fi
                 fi
-                
-                if [[ -n "$user" ]]; then
-                    group="$(id -gn "$user" 2>/dev/null || echo "$user")"
-                    detection_method="candidates + systemctl"
-                    break
-                fi
-            fi
-        done
+            done
+        fi
     fi
-    
+
     # Fallback to id if systemctl isn't active/installed
     if [[ -z "${user}" || -z "${group}" ]]; then
         for u in "${candidates[@]}"; do
@@ -939,9 +1026,13 @@ detect_web_user_group(){
 }
 
 config_php_fpm(){
-    local sock; sock="$(php_fpm_conf)"
-    run "Updating user to ${APP_USER} in: ${sock}" sed -i "s|^user = .*|user = ${APP_USER}|" "${sock}"
-    run "Updating user to ${APP_GROUP} in: ${sock}" sed -i "s|^group = .*|group = ${APP_GROUP}|" "${sock}"
+    local cfg; cfg="$(php_fpm_find_conf)"
+    local sock; sock="$(php_fpm_socket)"
+    run "Updating user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*user.*|user = ${APP_USER}|" "${cfg}"
+    run "Updating group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*group.*|group = ${APP_GROUP}|" "${cfg}"
+
+    run "Updating listen user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.owner.*|listen.owner = ${APP_USER}|" "${cfg}"
+    run "Updating listen group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.group.*|listen.group = ${APP_GROUP}|" "${cfg}"
     restart_php_fpm
 }
 
@@ -1102,7 +1193,6 @@ EOF"
 }
 
 # ---------------- Certbot ----------------
-ask_certbot(){ whiptail --title "$TITLE" --yesno "Install SSL with Certbot for ${DOMAIN} now?" 10 70; }
 
 install_certbot_pkgs(){
     case "$DISTRO_ID" in
@@ -1128,6 +1218,30 @@ run_certbot_webroot(){
     bash -lc "certbot certonly --non-interactive --agree-tos -m admin@${DOMAIN} --webroot -w '${APP_DIR}/public' -d '${DOMAIN}' || true"
 }
 
+
+create_self_signed_certs(){
+    local local_cert_dir="/etc/certs/spartan/${DOMAIN}"
+    local priv_key_path="${local_cert_dir}/privkey.pem"
+    local cert_path="${local_cert_dir}/fullchain.pem"
+
+    run "Creating dir for self-signed certificate" mkdir -p "${local_cert_dir}"
+
+    run "Generating a self-signed certificate for ${DOMAIN}" \
+    openssl req -x509 -nodes -sha256 -days 365 \
+    -newkey rsa:4096 \
+    -subj "/O=DezerX Spartan - Bauer Kuke EDV GBR/CN=*.${DOMAIN}" \
+    -keyout "${priv_key_path}" \
+    -out "${cert_path}"
+
+    if [[ -f "${priv_key_path}" && -f "${cert_path}" ]]; then
+        section "Self-signed certificates created at ${local_cert_dir}"
+        run "Making '${local_cert_dir}' only accessible by owner and group" chmod -R 640 "${local_cert_dir}"
+        run "Allowing ${WEB} access to '${local_cert_dir}' (${APP_USER}:${APP_GROUP})" chown -R "${APP_USER}:${APP_GROUP}" "${local_cert_dir}"
+        CERT_DIR="${local_cert_dir}"
+    else
+        section "Faild to generate a self-signed cert for ${DOMAIN}"
+    fi
+}
 
 # ---- HTTPS flip after certbot ----
 flip_app_url_to_https(){
@@ -1330,6 +1444,8 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
+echo -e "Script version 1.2.1-beta"
+
 main_menu
 
 if [[ "$CHOICE" == "install" ]]; then
@@ -1338,6 +1454,7 @@ if [[ "$CHOICE" == "install" ]]; then
     ask_license_key
     ask_app_dir
     choose_webserver
+    [[ "$WEB" == "apache" ]] && exit 1
     choose_ioncube
     choose_db_engine
     db_collect
@@ -1381,20 +1498,50 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_cron
     setup_systemd_queue
     
+    configure_nginx_http_only
+    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
+
     if [[ "$WEB" == "nginx" ]]; then
-        configure_nginx_http_only
-        if ask_certbot; then
-            install_certbot_pkgs
-            run_certbot_webroot
-            configure_nginx_ssl
-            flip_app_url_to_https
-        fi
+        case "$certbot_choice" in
+            install)
+                install_certbot_pkgs
+                run_certbot_webroot
+                configure_nginx_ssl
+                flip_app_url_to_https
+                ;;
+            later)
+                section "Chosed HTTP only."
+                ;;
+            assume)
+                section "Assuming SSL – base config for HTTPS."
+                install_certbot_pkgs
+                create_self_signed_certs
+                configure_nginx_ssl
+                flip_app_url_to_https
+                ;;
+            *)
+                section "unexpected response – skipping SSL setup."
+                ;;
+        esac
     else
-        if ask_certbot; then
-            install_certbot_pkgs
-            run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
-            flip_app_url_to_https
-        fi
+        case "$certbot_choice" in
+            install)
+                install_certbot_pkgs
+                run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
+                flip_app_url_to_https
+                ;;
+            later)
+                section "User chose to install SSL later (Apache)."
+                ;;
+            assume)
+                section "Assuming SSL template for Apache – enabling SSL vhost"
+                install_certbot_pkgs
+                flip_app_url_to_https
+                ;;
+            *)   section "Dialog cancelled – skipping Apache SSL setup."
+                ;;
+        esac
+
     fi
     
     app_maintenance_off
@@ -1446,7 +1593,7 @@ elif [[ "$CHOICE" == "update" ]]; then
         if [[ "$WEB" == "nginx" ]]; then
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
-            elif [[ "$WEB" == "apache" ]]; then
+        elif [[ "$WEB" == "apache" ]]; then
             run "Restart Apache" systemctl restart apache2 || systemctl restart httpd
         else
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
