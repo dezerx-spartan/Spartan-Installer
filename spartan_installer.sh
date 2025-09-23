@@ -1028,11 +1028,11 @@ detect_web_user_group(){
 config_php_fpm(){
     local cfg; cfg="$(php_fpm_find_conf)"
     local sock; sock="$(php_fpm_socket)"
-    run "Updating user to ${APP_USER} in: ${cfg}" sed -i "s|^[[:space:]]*;?[[:space:]]*user.*|user = ${APP_USER}|" "${cfg}"
-    run "Updating group to ${APP_GROUP} in: ${cfg}" sed -i "s|^[[:space:]]*;?[[:space:]]*group.*|group = ${APP_GROUP}|" "${cfg}"
+    run "Updating user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*user.*|user = ${APP_USER}|" "${cfg}"
+    run "Updating group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*group.*|group = ${APP_GROUP}|" "${cfg}"
 
-    run "Updating listen user to ${APP_USER} in: ${cfg}" sed -i "s|^[[:space:]]*;?[[:space:]]*listen\.owner.*|listen.owner = ${APP_USER}|" "${cfg}"
-    run "Updating listen group to ${APP_GROUP} in: ${cfg}" sed -i "s|^[[:space:]]*;?[[:space:]]*listen\.group.*|listen.group = ${APP_GROUP}|" "${cfg}"
+    run "Updating listen user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.owner.*|listen.owner = ${APP_USER}|" "${cfg}"
+    run "Updating listen group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.group.*|listen.group = ${APP_GROUP}|" "${cfg}"
     restart_php_fpm
 }
 
