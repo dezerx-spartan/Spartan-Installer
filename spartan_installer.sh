@@ -8,6 +8,8 @@ trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COM
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 APP_DIR="/var/www/spartan"
+DOMAIN="example.dezerx.com"
+CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
@@ -884,8 +886,8 @@ server {
 
     sendfile off;
 
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_certificate ${CERT_DIR}/fullchain.pem;
+    ssl_certificate_key ${CERT_DIR}/privkey.pem;
     ssl_session_cache shared:SSL:10m;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
@@ -1217,6 +1219,30 @@ run_certbot_webroot(){
 }
 
 
+create_self_signed_certs(){
+    local local_cert_dir="/etc/certs/spartan/${DOMAIN}"
+    local priv_key_path="${local_cert_dir}/privkey.pem"
+    local cert_path="${local_cert_dir}/fullchain.pem"
+
+    run "Creating dir for self-signed certificate" mkdir -p "${local_cert_dir}"
+
+    run "Generating a self-signed certificate for ${DOMAIN}" \
+    openssl req -x509 -nodes -sha256 -days 365 \
+    -newkey rsa:4096 \
+    -subj "/O=DezerX Spartan - Bauer Kuke EDV GBR/CN=*.${DOMAIN}" \
+    -keyout "${priv_key_path}" \
+    -out "${cert_path}"
+
+    if [[ -f "${priv_key_path}" && -f "${cert_path}" ]]; then
+        section "Self-signed certificates created at ${local_cert_dir}"
+        run "Making '${local_cert_dir}' only accessible by owner and group" chmod -R 640 "${local_cert_dir}"
+        run "Allowing ${WEB} access to '${local_cert_dir}' (${APP_USER}:${APP_GROUP})" chown -R "${APP_USER}:${APP_GROUP}" "${local_cert_dir}"
+        CERT_DIR="${local_cert_dir}"
+    else
+        section "Faild to generate a self-signed cert for ${DOMAIN}"
+    fi
+}
+
 # ---- HTTPS flip after certbot ----
 flip_app_url_to_https(){
     if [[ -f "${APP_DIR}/.env" ]]; then
@@ -1473,7 +1499,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_systemd_queue
     
     configure_nginx_http_only
-    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template only)" 3>&1 1>&2 2>&3) || true
+    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
 
     if [[ "$WEB" == "nginx" ]]; then
         case "$certbot_choice" in
@@ -1489,6 +1515,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
             assume)
                 section "Assuming SSL – base config for HTTPS."
                 install_certbot_pkgs
+
                 configure_nginx_ssl
                 flip_app_url_to_https
                 ;;
