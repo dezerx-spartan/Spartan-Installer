@@ -269,7 +269,7 @@ no_apache(){
     }
 
     if package_installed "$pkg_name" || unit_exists "$svc_name" || unit_exists "$sock_name" 2>/dev/null; then
-        section "Found an Apache installation, deactivating it."
+        section "Found a apache cave diver, deactivating it."
         if unit_exists "$svc_name"; then
             run "stopping apache" systemctl stop "$svc_name" || true
             run "deactivating apache" systemctl disable "$svc_name" || true
@@ -280,7 +280,7 @@ no_apache(){
             run "deactivating apache.socket" systemctl disable "$sock_name" || true
         fi
     else
-        section "No Apache installation found"
+        section "No apache cave diver found"
     fi
 }
 
@@ -821,7 +821,7 @@ configure_nginx_http_only(){
     nginx_layout_detect
     nginx_remove_defaults
     
-  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
+  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -867,7 +867,7 @@ configure_nginx_ssl(){
     local sock; sock="$(php_fpm_socket)"
     nginx_layout_detect
     nginx_remove_defaults
-  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
+  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -1221,7 +1221,6 @@ run_certbot_webroot(){
     run "Obtain certificate for ${DOMAIN} (webroot: ${APP_DIR}/public)" \
     bash -lc "certbot certonly --non-interactive --agree-tos -m admin@${DOMAIN} --webroot -w '${APP_DIR}/public' -d '${DOMAIN}' || true"
 }
-
 
 create_self_signed_certs(){
     local local_cert_dir="/etc/certs/spartan/${DOMAIN}"
