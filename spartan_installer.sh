@@ -4,8 +4,9 @@
 # Made by HDBento & Anthony S
 
 set -euo pipefail
-trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
+trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
+VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 APP_DIR="/var/www/spartan"
@@ -83,7 +84,7 @@ pm_update_upgrade(){
                 fi
             else
                 run "yum makecache" yum -y makecache
-                run "yum makecache" yum -y upgrade
+                run "yum upgrade" yum -y upgrade
             fi
         ;;
         fedora)
@@ -139,7 +140,7 @@ start_service(){
     fi
     
     if have rc-service >/dev/null 2>&1; then
-        section "Attempting to start ${svc} via rc-servic"
+        section "Attempting to start ${svc} via rc-service"
         if rc-service "$svc" start >/dev/null 2>&1; then
             return 0
         fi
@@ -268,7 +269,7 @@ no_apache(){
     }
 
     if package_installed "$pkg_name" || unit_exists "$svc_name" || unit_exists "$sock_name" 2>/dev/null; then
-        section "Found a apache cave diver deactivating it."
+        section "Found an Apache installation, deactivating it."
         if unit_exists "$svc_name"; then
             run "stopping apache" systemctl stop "$svc_name" || true
             run "deactivating apache" systemctl disable "$svc_name" || true
@@ -279,7 +280,7 @@ no_apache(){
             run "deactivating apache.socket" systemctl disable "$sock_name" || true
         fi
     else
-        section "No apache cave diver found"
+        section "No Apache installation found"
     fi
 }
 
@@ -591,10 +592,10 @@ ask_license_key(){
         if [[ "$LICENSE_KEY" == SPARTANSTARTER_* ]]; then
             PRODUCT_ID="1"
             PRODUCT_NAME="Spartan Starter"
-            elif [[ "$LICENSE_KEY" == SPARTANPROFESSIONAL_* ]]; then
+        elif [[ "$LICENSE_KEY" == SPARTANPROFESSIONAL_* ]]; then
             PRODUCT_ID="5"
             PRODUCT_NAME="Spartan Professional"
-            elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
+        elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
             PRODUCT_ID="6"
             PRODUCT_NAME="Spartan Ultimate"
         else
@@ -820,7 +821,7 @@ configure_nginx_http_only(){
     nginx_layout_detect
     nginx_remove_defaults
     
-  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
+  run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -866,7 +867,7 @@ configure_nginx_ssl(){
     local sock; sock="$(php_fpm_socket)"
     nginx_layout_detect
     nginx_remove_defaults
-  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
+  run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<EOF
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -1242,7 +1243,7 @@ create_self_signed_certs(){
         run "Allowing ${WEB} access to '${local_cert_dir}' (${APP_USER}:${APP_GROUP})" chown -R "${APP_USER}:${APP_GROUP}" "${local_cert_dir}"
         CERT_DIR="${local_cert_dir}"
     else
-        section "Faild to generate a self-signed cert for ${DOMAIN}"
+        section "Failed to generate a self-signed cert for ${DOMAIN}"
     fi
 }
 
@@ -1340,7 +1341,7 @@ restore_backups() {
 }
 
 app_get_dir() {
-    if [[ ! -d "${APP_DIR}" && -z "$(ls -A "$APP_DIR")" ]]; then
+    if [[ ! -d "${APP_DIR}" || -z "$(ls -A "$APP_DIR" 2>/dev/null)" ]]; then
         ask_update_app_dir
     fi
 }
@@ -1447,7 +1448,7 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-echo -e "Script version 1.2.1-beta-hotfix"
+echo -e "Script version ${VERSION}"
 
 main_menu
 
@@ -1513,7 +1514,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
                 flip_app_url_to_https
                 ;;
             later)
-                section "Chosed HTTP only."
+                section "Chose HTTP only."
                 ;;
             assume)
                 section "Assuming SSL – base config for HTTPS."
