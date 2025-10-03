@@ -297,6 +297,7 @@ ask_domain(){
         [[ -n "$DOMAIN" ]] && break
         whiptail --title "$TITLE" --msgbox "Domain is required." 8 50
     done
+    CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
     section "Domain set to: ${DOMAIN}"
 }
 
