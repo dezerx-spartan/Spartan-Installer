@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DezerX Spartan – Interactive Installer (Live Output, SSL-ready NGINX, no Redis)
 # Distros: Ubuntu/Debian, CentOS/RHEL/Alma/Rocky, Fedora
+# Made by HDBento & Anthony S
 
 set -euo pipefail
 trap 'echo "[ERR] An error occured at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
@@ -632,7 +633,7 @@ license_verify(){
     [[ "$SUCCESS" == "true" && "$IS_ACTIVE" == "true" ]] || { echo "API response:"; cat "$TMP"; die "License not active/valid: ${MSG:-Unknown}"; }
     
     echo "License OK: ${PNAME:-${PRODUCT_NAME}} (product_id=${PDID:-${PRODUCT_ID}})"
-    [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN"
+    [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN" || true
 }
 
 license_download_and_extract(){
