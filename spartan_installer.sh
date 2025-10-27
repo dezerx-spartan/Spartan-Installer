@@ -9,10 +9,10 @@ trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_CO
 VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
+DOMAIN="example.dezerx.com"
 APP_DIR="/var/www/spartan"
 IONCUBE_DIR="/usr/local/ioncube"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
-DOMAIN="example.dezerx.com"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
