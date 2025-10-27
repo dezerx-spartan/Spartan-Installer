@@ -10,8 +10,9 @@ VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 APP_DIR="/var/www/spartan"
-DOMAIN="example.dezerx.com"
+IONCUBE_DIR="/usr/local/ioncube"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+DOMAIN="example.dezerx.com"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 
@@ -323,9 +324,8 @@ choose_webserver(){
 }
 
 choose_ioncube(){
-    IONCUBE=$(whiptail --title "$TITLE" --radiolist "ionCube Loader" 12 70 2 \
+    IONCUBE=$(whiptail --title "$TITLE" --radiolist "ionCube Loader" 12 70 1 \
         "install" "Install ionCube Loader (recommended)" ON \
-        "skip"    "Skip (you will install it yourself)" OFF \
     3>&1 1>&2 2>&3) || exit 1
     section "ionCube selection: ${IONCUBE}"
 }
@@ -778,9 +778,61 @@ install_ioncube(){
         run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
         [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
         [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
-        elif [[ -d "/etc/php.d" ]]; then
+    elif [[ -d "/etc/php.d" ]]; then
         run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
     fi
+    restart_php_fpm
+}
+
+prepare_ioncube(){
+    local PHPV ARCH URL TMP TAR SO DST CUR_VER NEW_VER INI
+    PHPV="$(php_minor)"
+
+    case "$(uname -m)" in
+        x86_64) ARCH="x86-64" ;;
+        aarch64|arm64) ARCH="aarch64" ;;
+        *) die "ionCube: unsupported architecture $(uname -m)" ;;
+    esac
+
+    URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
+    TMP="$(mktemp -d)"
+    TAR="$TMP/ioncube.tar.gz"
+    trap 'rm -rf "$TMP"' RETURN
+
+    run "Download IonCube" curl -fsSL "$URL" -o "$TAR"
+    if [[ -f "$TAR" ]]; then
+        run "Extrat IonCube" tar -xzf "$TAR" -C "$TMP"
+    else
+        die "Archive of IonCube loader for PHP ${PHPV} not found."
+    fi
+
+    SO="$TMP/ioncube/ioncube_loader_lin_${PHPV}.so"
+    [[ -f "$SO" ]] || die "IonCube loader for PHP ${PHPV} not found in extracted archive."
+
+    NEW_VER="$(php -n -d "zend_extension=$SO" -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || true)"
+    CUR_VER="$(php -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || true)"
+    DST="${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
+
+    if [[ "$(printf '%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -n1)" != "$CUR_VER" ]]; then
+        echo "Updating IonCube loader from $CUR_VER -> $NEW_VER"
+        run "Uninstalling all old INI files" bash -lc "find /etc/php* -type f -name '*ioncube*.ini' -exec rm -f {} +"
+        run "Uninstalling all old IonCube loader" bash -lc "rm -f /usr/local/ioncube/ioncube_loader_lin_*.so"
+        run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
+    else
+        run "Ensuring ionCube dir exists" bash -lc "install -d '$IONCUBE_DIR'"
+        run "Installing ionCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
+    fi
+
+
+    INI="zend_extension=/usr/local/ioncube/ioncube_loader_lin_${PHPV}.so"
+    if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
+        run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
+        [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
+        [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
+    elif [[ -d "/etc/php.d" ]]; then
+        run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
+    fi
+
     restart_php_fpm
 }
 
@@ -1271,14 +1323,56 @@ app_maintenance_off(){
     fi
 }
 
+create_ioncube_backup() {
+    local listf backup_dir="/tmp/spartan_ioncube_backup_$(date +%Y%m%d%H%M%S)"
+    IONCUBE_BACKUP_FILE="${backup_dir}.tar.gz"
+
+    section "Creating backup of ${IONCUBE_DIR} at ${IONCUBE_BACKUP_FILE}"
+    mkdir -p "$backup_dir"
+
+    listf="$backup_dir/filelist.txt"
+    : > "$listf"
+    if [[ -d "$IONCUBE_DIR" ]]; then
+        printf '%s\n' "$IONCUBE_DIR" >> "$listf"
+        find "$IONCUBE_DIR" -maxdepth 1 -type f -name 'ioncube_loader_lin_*.so' -print >> "$listf"
+    fi
+
+    if [[ -s "$listf" ]]; then
+        sed 's#^/##' "$listf" | tar -czf "$IONCUBE_BACKUP_FILE" -C / -T - || die "Failed to create ioncube backup." 
+        echo "Backup created at: $IONCUBE_BACKUP_FILE" | tee -a "$LOG"
+    else
+        echo "Nothing to back up in ${IONCUBE_DIR}." | tee -a "$LOG"
+    fi
+}
+
+create_php_backup() {
+    local listf backup_dir="/tmp/spartan_php_backup_$(date +%Y%m%d%H%M%S)"
+    PHP_BACKUP_FILE="${backup_dir}.tar.gz"
+
+    section "Creating backup of PHP at ${PHP_BACKUP_FILE}"
+    mkdir -p "$backup_dir"
+
+    listf="$backup_dir/filelist.txt"
+    : > "$listf"
+
+    find /etc/php* -type f -name '*ioncube*.ini' -print 2>/dev/null >> "$listf" || true
+
+    if [[ -s "$listf" ]]; then
+        sed 's#^/##' "$listf" | tar -czf "$PHP_BACKUP_FILE" -C / -T - || die "Failed to create php backup."
+        echo "Backup created at: $PHP_BACKUP_FILE" | tee -a "$LOG"
+    else
+        echo "Nothing to back up in /etc/php*." | tee -a "$LOG"
+    fi
+}
+
 create_app_backup() {
     local backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
-    BACKUP_FILE="${backup_dir}.tar.gz"
+    APP_BACKUP_FILE="${backup_dir}.tar.gz"
     
-    section "Creating backup of ${APP_DIR} at ${BACKUP_FILE}"
-    mkdir -p "$(dirname "$BACKUP_FILE")"
-    tar -czf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
-    echo "Backup created at: $BACKUP_FILE" | tee -a "$LOG"
+    section "Creating backup of ${APP_DIR} at ${APP_BACKUP_FILE}"
+    mkdir -p "$backup_dir"
+    tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
+    echo "Backup created at: $APP_BACKUP_FILE" | tee -a "$LOG"
 }
 
 create_db_backup() {
@@ -1287,7 +1381,7 @@ create_db_backup() {
         DB_BACKUP_FILE="${backup_dir}.sql.gz"
         
         section "Creating database backup at ${DB_BACKUP_FILE}"
-        mkdir -p "$(dirname "$DB_BACKUP_FILE")"
+        mkdir -p "$backup_dir"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
         
@@ -1307,36 +1401,63 @@ create_db_backup() {
 create_backups(){
     create_app_backup
     create_db_backup
+    create_php_backup
+    create_ioncube_backup
+}
+
+restore_ioncube_backup() {
+    if [[ -n "${IONCUBE_BACKUP_FILE:-}" && -f "$IONCUBE_BACKUP_FILE" ]]; then
+        section "Restoring IonCube from ${IONCUBE_BACKUP_FILE}"
+        tar -xzf "$IONCUBE_BACKUP_FILE" -C / || die "Failed to restore IonCube backup."
+        echo "IonCube backup restored." | tee -a "$LOG"
+    else
+        echo "No IonCube backup file to restore."
+    fi
+}
+
+restore_php_backup() {
+    if [[ -n "${PHP_BACKUP_FILE:-}" && -f "$PHP_BACKUP_FILE" ]]; then
+        section "Restoring IonCube from ${PHP_BACKUP_FILE}"
+        tar -xzf "$PHP_BACKUP_FILE" -C / || die "Failed to restore PHP backup."
+        echo "PHP backup restored" | tee -a "$LOG"
+    else
+        echo "No PHP backup file to restore." | tee -a "$LOG"
+    fi
 }
 
 restore_app_backup() {
-    if [[ -f "$BACKUP_FILE" ]]; then
-        section "Restoring backup from ${BACKUP_FILE}"
-        rm -rf "${APP_DIR}"/*
-        tar -xzf "$BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
-        echo "Backup restored successfully."
+    if [[ -n "${APP_BACKUP_FILE}" && -f "$APP_BACKUP_FILE" ]]; then
+        section "Restoring backup from ${APP_BACKUP_FILE}"
+        find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
+        [[ -d "$APP_DIR" ]] || mkdir -p "$APP_DIR"
+        tar -xzf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
+        echo "Backup restored successfully." | tee -a "$LOG"
     else
-        die "No backup file found to restore."
+        echo "No app backup file found to restore." | tee -a "$LOG"
     fi
 }
 
 restore_db_backup() {
-    if [[ -f "$DB_BACKUP_FILE" ]]; then
+    if [[ -n "$DB_BACKUP_FILE" && -f "$DB_BACKUP_FILE" ]]; then
         if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
             section "Restoring database backup from ${DB_BACKUP_FILE}"
             gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
-            echo "Database backup restored successfully."
+            echo "Database backup restored successfully." | tee -a "$LOG"
         else
-            die "Unsupported database engine: ${DB_ENGINE}"
+            echo "Unsupported database engine: ${DB_ENGINE}" | tee -a "$LOG"
         fi
     else
-        die "No database backup file found to restore."
+        echo "No database backup file found to restore." | tee -a "$LOG"
     fi
 }
 
 restore_backups() {
     restore_app_backup
     restore_db_backup
+    restore_php_backup
+    restore_ioncube_backup
+    app_maintenance_off
+    die "Update failed, backup restored."
 }
 
 app_get_dir() {
@@ -1490,7 +1611,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     install_db_engine
     db_create
     install_composer
-    [[ "$IONCUBE" == "install" ]] && install_ioncube || section "Skipping ionCube (user choice)"
+    prepare_ioncube || section "Skipping ionCube (user choice)"
     
     # App setup & build
     detect_web_user_group
@@ -1581,10 +1702,10 @@ elif [[ "$CHOICE" == "update" ]]; then
     license_verify
     if ! license_download_and_extract; then
         restore_backups
-        die "Update failed, backup restored."
     fi
     
     detect_web_user_group
+    prepare_ioncube || restore_backups
     # Install and set perms
     if app_setup_dir && app_update_steps; then
         apply_permissions
@@ -1622,7 +1743,6 @@ elif [[ "$CHOICE" == "update" ]]; then
         hr
     else
         restore_backups
-        die "Update failed, backup restored."
     fi
     
     exit 0
