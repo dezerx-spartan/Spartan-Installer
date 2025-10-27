@@ -758,31 +758,6 @@ php_fpm_find_conf(){
 
 
 # ---------------- ionCube ----------------
-install_ioncube(){
-    local PHPV ARCH URL TMP TAR SO
-    PHPV="$(php_minor)"
-    case "$(uname -m)" in
-        x86_64) ARCH="x86-64" ;;
-        aarch64|arm64) ARCH="aarch64" ;;
-        *) die "ionCube: unsupported architecture $(uname -m)" ;;
-    esac
-    URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
-    TMP="$(mktemp -d)"; TAR="$TMP/ioncube.tar.gz"
-    run "Download ionCube" curl -fsSL "$URL" -o "$TAR"
-    run "Extract ionCube" tar -xzf "$TAR" -C "$TMP"
-    SO="$TMP/ioncube/ioncube_loader_lin_${PHPV}.so"
-    [[ -f "$SO" ]] || die "ionCube loader for PHP ${PHPV} not found."
-    run "Install ionCube to /usr/local/ioncube" bash -lc "install -d /usr/local/ioncube && install -m 0644 '$SO' /usr/local/ioncube/"
-    local INI="zend_extension=/usr/local/ioncube/ioncube_loader_lin_${PHPV}.so"
-    if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
-        run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
-        [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
-        [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
-    elif [[ -d "/etc/php.d" ]]; then
-        run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
-    fi
-    restart_php_fpm
-}
 
 prepare_ioncube(){
     local PHPV ARCH URL TMP TAR SO DST CUR_VER NEW_VER INI
