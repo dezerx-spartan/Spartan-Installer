@@ -469,7 +469,7 @@ install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu)
-                run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+                run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
                 run "Using nginx mainline packages as default" bash -lc "cat > '/etc/apt/sources.list.d/nginx.list' <<'EOF'
 deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx
 EOF"
@@ -788,13 +788,14 @@ prepare_ioncube(){
     CUR_VER="$(php -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || true)"
     DST="${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
 
+    [[ ! -d $IONCUBE_DIR ]] && run "Ensuring ionCube dir exists" bash -lc "install -d '$IONCUBE_DIR'"
+
     if [[ "$(printf '%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -n1)" != "$CUR_VER" ]]; then
         echo "Updating IonCube loader from $CUR_VER -> $NEW_VER"
         run "Uninstalling all old INI files" bash -lc "find /etc/php* -type f -name '*ioncube*.ini' -exec rm -f {} +"
         run "Uninstalling all old IonCube loader" bash -lc "rm -f /usr/local/ioncube/ioncube_loader_lin_*.so"
         run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
     else
-        run "Ensuring ionCube dir exists" bash -lc "install -d '$IONCUBE_DIR'"
         run "Installing ionCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
     fi
 
@@ -1152,6 +1153,16 @@ app_update_steps(){
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
 }
 
+app_restore_steps(){
+    COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
+    [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
+    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
+    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
+    run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
+    app_maintenance_off
+}
+
 apply_permissions(){
     run "Set ownership to ${APP_USER}:${APP_GROUP}" chown -R "${APP_USER}:${APP_GROUP}" "${APP_DIR}"
     run "Set permissions 755" chmod -R 755 "${APP_DIR}"
@@ -1341,12 +1352,14 @@ create_php_backup() {
 }
 
 create_app_backup() {
-    local backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
+    local app_basename backup_dir
+    backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
     APP_BACKUP_FILE="${backup_dir}.tar.gz"
+    app_basename="$(basename "$APP_DIR")"
     
     section "Creating backup of ${APP_DIR} at ${APP_BACKUP_FILE}"
     mkdir -p "$backup_dir"
-    tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" "$(basename "$APP_DIR")" || die "Failed to create backup."
+    tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" --exclude="$(basename "$APP_DIR")/node_modules" "$(basename "$APP_DIR")" || die "Failed to create backup."
     echo "Backup created at: $APP_BACKUP_FILE" | tee -a "$LOG"
 }
 
@@ -1431,7 +1444,8 @@ restore_backups() {
     restore_db_backup
     restore_php_backup
     restore_ioncube_backup
-    app_maintenance_off
+    app_restore_steps
+    apply_permissions
     die "Update failed, backup restored."
 }
 
