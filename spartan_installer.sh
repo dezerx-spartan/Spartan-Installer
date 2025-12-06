@@ -352,13 +352,6 @@ choose_webserver(){
     section "Web server: ${WEB}"
 }
 
-# choose_ioncube(){
-#     IONCUBE=$(whiptail --title "$TITLE" --radiolist "ionCube Loader" 12 70 1 \
-#         "install" "Install ionCube Loader (recommended)" ON \
-#     3>&1 1>&2 2>&3) || exit 1
-#     section "ionCube selection: ${IONCUBE}"
-# }
-
 choose_db_engine(){
     if [[ -z "${DB_ENGINE:-}" ]]; then
     DB_ENGINE=$(whiptail --title "$TITLE" --radiolist "Choose database server" 12 70 2 \
