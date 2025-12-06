@@ -9,12 +9,20 @@ trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_CO
 VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
-DOMAIN="example.dezerx.com"
+DOMAIN=""
 APP_DIR="/var/www/spartan"
+APP_DEFAULT_DIR="/var/www/spartan"
 IONCUBE_DIR="/usr/local/ioncube"
+BACKUP_DIR="/tmp/spartan"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
+
+ACTION=""
+ASSUME_YES=0
+SHOW_HELP=0
+NONINTERACTIVE=0
+USED_APP_DIR=0
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -79,7 +87,11 @@ pm_update_upgrade(){
         centos|rhel|almalinux|rocky)
             if have dnf; then
                 run "dnf makecache" dnf -y makecache
-                run "dnf upgrade" dnf -y upgrade
+                if ! run "dnf upgrade" dnf -y upgrade; then
+                    echo "dnf upgrade failed, falling back to distro-sync"
+                    run "dnf distro-sync" dnf -y distro-sync
+                fi
+
                 if ((full)); then
                     run "dnf dist-upgrade" dnf -y distro-sync
                 fi
@@ -290,22 +302,34 @@ main_menu(){
     CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 70 3 \
         "install" "Install DezerX Spartan" \
         "update" "Update DezerX Spartan" \
-    "delete" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+        "uninstall" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
 }
 
 ask_domain(){
-    while :; do
-        DOMAIN=$(whiptail --title "$TITLE" --inputbox "Enter your primary domain (e.g. example.com)\nThis will be used for vHost, APP_URL and SSL." 10 70 "" 3>&1 1>&2 2>&3) || exit 1
-        [[ -n "$DOMAIN" ]] && break
-        whiptail --title "$TITLE" --msgbox "Domain is required." 8 50
-    done
+    if [[ -z "$DOMAIN" ]]; then
+        while :; do
+            DOMAIN=$(whiptail --title "$TITLE" --inputbox "Enter your primary domain (e.g. example.com)\nThis will be used for vHost, APP_URL and SSL." 10 70 "" 3>&1 1>&2 2>&3) || exit 1
+            [[ -n "$DOMAIN" ]] && break
+            whiptail --title "$TITLE" --msgbox "Domain is required." 8 50
+        done
+    else
+        echo "Skipping domain prompt, using provided domain."
+    fi
     CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
     section "Domain set to: ${DOMAIN}"
 }
 
 ask_app_dir(){
     local default_dir="$APP_DIR"
-    APP_DIR=$(whiptail --title "$TITLE" --inputbox "Application directory (DocumentRoot = APP_DIR/public)\n\nEdit if needed:" 12 70 "$default_dir" 3>&1 1>&2 2>&3) || exit 1
+    if [[ "$ASSUME_YES" == 1 ]]; then
+        echo "Assuming yes, using default dir."
+    else
+        if [[ "$NONINTERACTIVE" == 0 && "$APP_DIR" == "$APP_DEFAULT_DIR" && "$USED_APP_DIR" == 0 ]]; then
+            APP_DIR=$(whiptail --title "$TITLE" --inputbox "Application directory (DocumentRoot = APP_DIR/public)\n\nEdit if needed:" 12 70 "$default_dir" 3>&1 1>&2 2>&3) || exit 1
+        else
+            echo "Skipping app dir prompt, using provided app dir."
+        fi
+    fi
     section "APP_DIR set to: ${APP_DIR}"
 }
 
@@ -316,41 +340,50 @@ ask_update_app_dir(){
 }
 
 choose_webserver(){
-    WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
-        "nginx"  "Nginx (recommended)" ON \
-        "apache" "Apache (not a option)" OFF \
-    3>&1 1>&2 2>&3) || exit 1
+    if [[ -z "${WEB:-}" ]]; then
+        WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
+            "nginx"  "Nginx (recommended)" ON \
+            "apache" "Apache (not a option)" OFF \
+        3>&1 1>&2 2>&3) || exit 1
+    else
+        echo "Skipping webserver prompt, using provided webserver."
+    fi
+    [[ "$WEB" == "apache" ]] && exit 1
     section "Web server: ${WEB}"
 }
 
-choose_ioncube(){
-    IONCUBE=$(whiptail --title "$TITLE" --radiolist "ionCube Loader" 12 70 1 \
-        "install" "Install ionCube Loader (recommended)" ON \
-    3>&1 1>&2 2>&3) || exit 1
-    section "ionCube selection: ${IONCUBE}"
-}
-
 choose_db_engine(){
+    if [[ -z "${DB_ENGINE:-}" ]]; then
     DB_ENGINE=$(whiptail --title "$TITLE" --radiolist "Choose database server" 12 70 2 \
         "mariadb" "MariaDB Server" ON \
         "mysql"   "MySQL Server" OFF \
     3>&1 1>&2 2>&3) || exit 1
+    else
+        echo "Skipping database type prompt, using provided database type."
+    fi
     section "DB engine: ${DB_ENGINE}"
 }
 
 # ---------------- DB Wizard ----------------
 DB_HOST="127.0.0.1"; DB_PORT="3306"; DB_NAME="dezerx"; DB_USER="dezer"; DB_PASS=""
 db_collect(){
-    DB_HOST=$(whiptail --title "$TITLE" --inputbox "Database Host" 10 70 "${DB_HOST}" 3>&1 1>&2 2>&3) || exit 1
-    DB_PORT=$(whiptail --title "$TITLE" --inputbox "Database Port" 10 70 "${DB_PORT}" 3>&1 1>&2 2>&3) || exit 1
-    DB_NAME=$(whiptail --title "$TITLE" --inputbox "Database Name" 10 70 "${DB_NAME}" 3>&1 1>&2 2>&3) || exit 1
-    DB_USER=$(whiptail --title "$TITLE" --inputbox "Database User" 10 70 "${DB_USER}" 3>&1 1>&2 2>&3) || exit 1
+    if [[ "$ASSUME_YES" == 0 ]]; then
+        DB_HOST=$(whiptail --title "$TITLE" --inputbox "Database Host" 10 70 "${DB_HOST}" 3>&1 1>&2 2>&3) || exit 1
+        DB_PORT=$(whiptail --title "$TITLE" --inputbox "Database Port" 10 70 "${DB_PORT}" 3>&1 1>&2 2>&3) || exit 1
+        DB_NAME=$(whiptail --title "$TITLE" --inputbox "Database Name" 10 70 "${DB_NAME}" 3>&1 1>&2 2>&3) || exit 1
+        DB_USER=$(whiptail --title "$TITLE" --inputbox "Database User" 10 70 "${DB_USER}" 3>&1 1>&2 2>&3) || exit 1
+    else
+        echo "Assuming yes, using default settings for database setup"
+    fi
     while :; do
-        DB_PASS=$(whiptail --title "$TITLE" --passwordbox "Database Password\n\nUse a strong unique password.\n\nLeave empty to auto-generate one." 12 70 3>&1 1>&2 2>&3) || exit 1
-        
+        [[ "$ASSUME_YES" == 0 ]] && DB_PASS=$(whiptail --title "$TITLE" --passwordbox "Database Password\n\nUse a strong unique password.\n\nLeave empty to auto-generate one." 12 70 3>&1 1>&2 2>&3)
         if [[ -z "$DB_PASS" ]]; then
             DB_PASS=$(openssl rand -hex 16)
-            whiptail --title "$TITLE" --msgbox "No password entered, a secure password was generated for you:\n\n${DB_PASS}\n\nSave it somewhere safe. (it will be written to the .env file)" 14 70
+            if [[ "$ASSUME_YES" == 0 ]]; then
+                whiptail --title "$TITLE" --msgbox "No password entered, a secure password was generated for you:\n\n${DB_PASS}\n\nSave it somewhere safe. (it will be written to the .env file)" 14 70
+            else
+                echo "Automaticaly generated a password for the database: ${DB_PASS}"
+            fi
             break
         fi
         
@@ -362,8 +395,12 @@ db_collect(){
         
         whiptail --title "$TITLE" --msgbox "Passwords do not match. Please try again." 10 60
     done
-    whiptail --title "$TITLE" --yesno "Database configuration:\n\nHost: ${DB_HOST}\nPort: ${DB_PORT}\nName: ${DB_NAME}\nUser: ${DB_USER}\n\nProceed to create database and user?" 14 70 || exit 1
-    section "DB config confirmed: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    if [[ "$ASSUME_YES" == 0 ]]; then
+        whiptail --title "$TITLE" --yesno "Database configuration:\n\nHost: ${DB_HOST}\nPort: ${DB_PORT}\nName: ${DB_NAME}\nUser: ${DB_USER}\n\nProceed to create database and user?" 14 70 || exit 1
+        section "DB config confirmed: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    else
+        section "DB config: ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    fi
 }
 
 mysql_exec(){
@@ -588,7 +625,7 @@ ask_license_key(){
             whiptail --title "$TITLE" --msgbox "License key is required." 8 50
             continue
         fi
-        
+
         if [[ "$LICENSE_KEY" == SPARTANSTARTER_* ]]; then
             PRODUCT_ID="1"
             PRODUCT_NAME="Spartan Starter"
@@ -1310,13 +1347,12 @@ app_maintenance_off(){
 }
 
 create_ioncube_backup() {
-    local listf backup_dir="/tmp/spartan_ioncube_backup_$(date +%Y%m%d%H%M%S)"
-    IONCUBE_BACKUP_FILE="${backup_dir}.tar.gz"
+    local listf backup_path="${BACKUP_DIR}/spartan_ioncube_backup_$(date +%Y%m%d%H%M%S)"
+    IONCUBE_BACKUP_FILE="${backup_path}.tar.gz"
 
     section "Creating backup of ${IONCUBE_DIR} at ${IONCUBE_BACKUP_FILE}"
-    mkdir -p "$backup_dir"
 
-    listf="$backup_dir/filelist.txt"
+    listf="${BACKUP_DIR}/ioncube_filelist.txt"
     : > "$listf"
     if [[ -d "$IONCUBE_DIR" ]]; then
         printf '%s\n' "$IONCUBE_DIR" >> "$listf"
@@ -1326,19 +1362,19 @@ create_ioncube_backup() {
     if [[ -s "$listf" ]]; then
         sed 's#^/##' "$listf" | tar -czf "$IONCUBE_BACKUP_FILE" -C / -T - || die "Failed to create ioncube backup." 
         echo "Backup created at: $IONCUBE_BACKUP_FILE" | tee -a "$LOG"
+        rm -f "$listf"
     else
         echo "Nothing to back up in ${IONCUBE_DIR}." | tee -a "$LOG"
     fi
 }
 
 create_php_backup() {
-    local listf backup_dir="/tmp/spartan_php_backup_$(date +%Y%m%d%H%M%S)"
-    PHP_BACKUP_FILE="${backup_dir}.tar.gz"
+    local listf backup_path="${BACKUP_DIR}/spartan_php_backup_$(date +%Y%m%d%H%M%S)"
+    PHP_BACKUP_FILE="${backup_path}.tar.gz"
 
     section "Creating backup of PHP at ${PHP_BACKUP_FILE}"
-    mkdir -p "$backup_dir"
 
-    listf="$backup_dir/filelist.txt"
+    listf="${BACKUP_DIR}/php_filelist.txt"
     : > "$listf"
 
     find /etc/php* -type f -name '*ioncube*.ini' -print 2>/dev/null >> "$listf" || true
@@ -1346,39 +1382,36 @@ create_php_backup() {
     if [[ -s "$listf" ]]; then
         sed 's#^/##' "$listf" | tar -czf "$PHP_BACKUP_FILE" -C / -T - || die "Failed to create php backup."
         echo "Backup created at: $PHP_BACKUP_FILE" | tee -a "$LOG"
+        rm -f "$listf"
     else
         echo "Nothing to back up in /etc/php*." | tee -a "$LOG"
     fi
 }
 
 create_app_backup() {
-    local app_basename backup_dir
-    backup_dir="/tmp/spartan_backup_$(date +%Y%m%d%H%M%S)"
-    APP_BACKUP_FILE="${backup_dir}.tar.gz"
-    app_basename="$(basename "$APP_DIR")"
+    local app_basename backup_path
+    backup_path="${BACKUP_DIR}/spartan_backup_$(date +%Y%m%d%H%M%S)"
+    APP_BACKUP_FILE="${backup_path}.tar.gz"
     
     section "Creating backup of ${APP_DIR} at ${APP_BACKUP_FILE}"
-    mkdir -p "$backup_dir"
     tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" --exclude="$(basename "$APP_DIR")/node_modules" "$(basename "$APP_DIR")" || die "Failed to create backup."
     echo "Backup created at: $APP_BACKUP_FILE" | tee -a "$LOG"
 }
 
 create_db_backup() {
     if [[ "$DB_ENGINE" == "mysql" ]]; then
-        local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
-        DB_BACKUP_FILE="${backup_dir}.sql.gz"
+        local backup_path="${BACKUP_DIR}/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
+        DB_BACKUP_FILE="${backup_path}.sql.gz"
         
         section "Creating database backup at ${DB_BACKUP_FILE}"
-        mkdir -p "$backup_dir"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
         
     elif [[ "$DB_ENGINE" == "mariadb" ]]; then
-        local backup_dir="/tmp/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
-        DB_BACKUP_FILE="${backup_dir}.sql.gz"
+        local backup_path="${BACKUP_DIR}/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
+        DB_BACKUP_FILE="${backup_path}.sql.gz"
         
         section "Creating database backup at ${DB_BACKUP_FILE}"
-        mkdir -p "$(dirname "$DB_BACKUP_FILE")"
         mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
     else
@@ -1387,6 +1420,7 @@ create_db_backup() {
 }
 
 create_backups(){
+    mkdir -p "$BACKUP_DIR"
     create_app_backup
     create_db_backup
     create_php_backup
@@ -1450,8 +1484,13 @@ restore_backups() {
 }
 
 app_get_dir() {
-    if [[ ! -d "${APP_DIR}" || -z "$(ls -A "$APP_DIR" 2>/dev/null)" ]]; then
-        ask_update_app_dir
+    if [[ ! -d "${APP_DIR}" || -z "$(ls -A -- "$APP_DIR" 2>/dev/null)" ]]; then
+        if [[ "$NONINTERACTIVE" == 0 ]]; then
+            ask_update_app_dir
+        else
+            echo "APP directory doesn't exist or is empty."
+            exit 1
+        fi
     fi
 }
 
@@ -1551,32 +1590,13 @@ app_setup_dir(){
         app_merge_json "${APP_DIR}/modules_statuses.json.old" "${APP_DIR}/modules_statuses.json.new" "${APP_DIR}/modules_statuses.json"
     fi
 }
-# ---------------- Flow ----------------
-need_root
-detect_os
-pm_update_upgrade 0
-install_essentials
 
-echo -e "Script version ${VERSION}"
-
-main_menu
-
-if [[ "$CHOICE" == "install" ]]; then
-    # Installation logic
-    ask_domain
-    ask_license_key
-    ask_app_dir
-    choose_webserver
-    [[ "$WEB" == "apache" ]] && exit 1
-    choose_ioncube
-    choose_db_engine
-    db_collect
-    
-    whiptail --title "$TITLE" --yesno "Summary:\n
+Summary(){
+    if [[ "$ASSUME_YES" == 0 ]]; then
+        whiptail --title "$TITLE" --yesno "Summary:\n
 Domain: ${DOMAIN}
 App dir: ${APP_DIR}
 Web server: ${WEB}
-ionCube: ${IONCUBE}
 Database engine: ${DB_ENGINE}
 
 DB Host: ${DB_HOST}
@@ -1586,8 +1606,360 @@ DB User: ${DB_USER}
 
 Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
 
-    Proceed with installation (live output)?" 22 72 || exit 1
-    
+Proceed with installation (live output)?" 22 72 || exit 1
+    else
+        cat <<EOF
+
+Summary:
+- Product = ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
+- Domain = ${DOMAIN}
+- App dir = ${APP_DIR}
+- Web server = ${WEB}
+
+- Database engine = ${DB_ENGINE}
+- DB Host = ${DB_HOST}
+- DB Port = ${DB_PORT}
+- DB Name = ${DB_NAME}
+- DB User = ${DB_USER}
+
+EOF
+    fi
+}
+
+verify_webserver(){
+    local webserver="$1"
+    case "$webserver" in
+        nginx)
+            WEB="nginx" ;;
+        apache)
+            WEB="apache" ;;
+        *)
+            echo "Unknown/unsupported webserver" >&2
+            exit 1
+            ;;
+    esac
+}
+
+verify_database(){
+    local db_type="$1"
+    case "$db_type" in
+        mariadb)
+            DB_ENGINE="mariadb" ;;
+        mysql)
+            DB_ENGINE="mysql" ;;
+        *)
+            echo "Unknown/unsupported database type" >&2
+            exit 1
+            ;;
+    esac
+}
+
+verify_license(){
+    local license="$1"
+    case "$license" in
+        SPARTANSTARTER_*)
+            PRODUCT_ID="1"
+            PRODUCT_NAME="Spartan Starter"
+            LICENSE_KEY="${license}"
+            ;;
+        SPARTANPROFESSIONAL_*)
+            PRODUCT_ID="5"
+            PRODUCT_NAME="Spartan Professional"
+            LICENSE_KEY="${license}"
+            ;;
+        SPARTANULTIMATE_*)
+            PRODUCT_ID="6"
+            PRODUCT_NAME="Spartan Ultimate"
+            LICENSE_KEY="${license}"
+            ;;
+        *)
+            echo "Invalid license key. Please try again."
+            exit 1
+            ;;
+    esac
+}
+
+verify_ssl(){
+    local ssl_mode="$1"
+    case "$ssl_mode" in
+        install)
+            certbot_choice="install"
+            ;;
+        later)
+            certbot_choice="later"
+            ;;
+        assume)
+            certbot_choice="assume"
+            ;;
+        *)
+            echo "Invalid ssl mode. Please try again."
+            exit 1
+            ;;
+    esac
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --install)
+                ACTION="install"
+                shift
+                ;;
+            --update)
+                ACTION="update"
+                shift
+                ;;
+            --delete|--uninstall)
+                ACTION="uninstall"
+                shift
+                ;;
+            --app-dir=*)
+                local dir="${1#--app-dir=}"
+                if [[ "${dir-}" ]]; then
+                    APP_DIR="$dir"
+                    USED_APP_DIR=1
+                    shift
+                else
+                    echo "Missing argument for --app-dir=" >&2
+                    exit 1
+                fi
+                ;;
+            --app-dir)
+                if [[ -n "${2-}" ]]; then
+                    APP_DIR="$2"
+                    shift 2
+                else
+                    echo "Missing argument for --app-dir" >&2
+                    exit 1
+                fi
+                ;;
+            --license=*)
+                local license="${1#--license=}"
+                if [[ "${license-}" ]]; then
+                    verify_license "$license"
+                    shift
+                else
+                    echo "Missing argument for --license=" >&2
+                    exit 1
+                fi
+                ;;
+            --license)
+                if [[ -n "${2-}" ]]; then
+                    verify_license "$2"
+                    shift 2
+                else
+                    echo "Missing argument for --license" >&2
+                    exit 1
+                fi
+                ;;
+            --domain=*)
+                local domain="${1#--domain=}"
+                if [[ "${DOMAIN-}" ]]; then
+                    DOMAIN="$domain"
+                    shift
+                else
+                    echo "Missing argument for --domain=" >&2
+                    exit 1
+                fi
+                ;;
+            --domain)
+                if [[ -n "${2-}" ]]; then
+                    DOMAIN="$2"
+                    shift 2
+                else
+                    echo "Missing argument for --domain" >&2
+                    exit 1
+                fi
+                ;;
+            --webserver=*)
+                local webserver
+                webserver="${1#--webserver=}"
+                if [[ -n "${webserver-}" ]]; then
+                    verify_webserver "$webserver"
+                    shift
+                else
+                    echo "Missing argument for --webserver=" >&2
+                    exit 1
+                fi
+                ;;
+            --webserver)
+                local webserver
+                webserver="$2"
+                if [[ -n "${webserver-}" ]]; then
+                    verify_webserver "$webserver"
+                    shift 2
+                else
+                    echo "Missing argument for --webserver" >&2
+                    exit 1
+                fi
+                ;;
+            --db-type=*)
+                local db_type
+                db_type="${1#--db-type=}"
+                if [[ -n "${db_type-}" ]]; then
+                    verify_database "$db_type"
+                    shift
+                else
+                    echo "Missing argument for --db-type=" >&2
+                    exit 1
+                fi
+                ;;
+            --db-type)
+                local db_type
+                db_type="$2"
+                if [[ -n "${db_type-}" ]]; then
+                    verify_database "$db_type"
+                    shift 2
+                else
+                    echo "Missing argument for --db-type" >&2
+                    exit 1
+                fi
+                ;;
+            --ssl-mode)
+                local ssl_mode
+                ssl_mode="$2"
+                if [[ -n "${ssl_mode-}" ]]; then
+                    verify_ssl "$ssl_mode"
+                    shift 2
+                else
+                    echo "Missing argument for --ssl-mode" >&2
+                    exit 1
+                fi
+                ;;
+            --ssl-mode=*)
+                local ssl_mode
+                ssl_mode="${1#--ssl-mode=}"
+                if [[ -n "${ssl_mode-}" ]]; then
+                    verify_ssl "$ssl_mode"
+                    shift
+                else
+                    echo "Missing argument for --ssl-mode=" >&2
+                    exit 1
+                fi
+                ;;
+            --non-interactive)
+                NONINTERACTIVE=1
+                ASSUME_YES=1
+                shift
+                ;;
+            -h|--help)
+                SHOW_HELP=1
+                shift
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                shift
+                ;;
+        esac
+    done
+}
+
+noninteractive_checks(){
+    local missing_args required_args
+    if [[ "$ACTION" == "install" || -z "$ACTION" ]]; then
+        missing_args=()
+        required_args=(
+            ACTION
+            DOMAIN
+            LICENSE_KEY
+            WEB
+            DB_ENGINE
+            certbot_choice
+        )
+
+        for arg in "${required_args[@]}"; do
+            [[ -z "${!arg:-}" ]] && missing_args+=("$arg")
+        done
+
+        if [[ "${#missing_args[@]}" -eq 0 ]]; then
+            echo "All required arguments supplied continuing in non-interactive mode."
+        else
+            echo "Missing arguments for non-interactive mode to continue: ${missing_args[*]}"
+            exit 1
+        fi
+    elif [[ "$ACTION" == "update" ]]; then
+        if [[ "$USED_APP_DIR" == 1 ]]; then
+            echo "All required arguments supplied continuing in non-interactive mode."
+        else
+            echo "required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
+        fi
+    else
+        echo "non-interactive mode not available for uninstalls at the moment."
+        exit 1
+    fi
+}
+
+show_help(){
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Options:
+    -h, --help                  Show this help message and exit
+    --install                   Run a fresh installation (interactive)
+    --update                    Update an existing installation (non-interactive)
+    --delete, --uninstall       Delete the application directory (no DB removal)
+    --non-interactive           hides all confirmation and configuration dialogs
+                                (used for 1 line installs/updates)
+
+    --app-dir=PATH              Sets the application directory (DocumentRoot = PATH/public)
+                                You can also use the spaced form:  --app-dir PATH
+
+    --license=KEY               Sets the DezerX license key.
+                                You can also use the spaced form:  --license KEY
+
+    --domain=HOSTNAME           Primary domain for the vHost, APP_URL and SSL.
+                                You can also use the spaced form:  --domain HOSTNAME
+
+    --webserver=SERVER          Sets the web server to install and configure.
+                                Accepted values:  nginx | apache (apache not supported atm)
+                                You can also use the spaced form:  --webserver SERVER
+
+    --db-type=ENGINE            Sets the database engine to install and configure.
+                                Accepted values:  mariadb | mysql
+                                You can also use the spaced form:  --db-type ENGINE
+
+    --ssl-mode=MODE             Sets SSL mode to use.
+                                Accepted values:  install | later | assume
+                                You can also use the spaced form:  --ssl-mode MODE
+
+It's also recommanded to use "" in case the script can't find the custom setting example:
+    --app-dir "/Path To/My spartan/Install/"
+EOF
+    exit 0
+}
+
+# ---------------- Flow ----------------
+
+parse_args "$@"
+
+[[ "$SHOW_HELP" == 1 ]] && show_help
+[[ "$NONINTERACTIVE" == 1 ]] && noninteractive_checks
+
+need_root
+detect_os
+pm_update_upgrade 0
+install_essentials
+
+echo -e "Script version ${VERSION}\n"
+
+if [[ -z "$ACTION" ]]; then
+    main_menu
+else
+    CHOICE="$ACTION" 
+fi
+
+if [[ "$CHOICE" == "install" ]]; then
+    # Installation logic
+    ask_domain
+    [[ -z "$LICENSE_KEY" ]] && ask_license_key
+    ask_app_dir
+    choose_webserver
+    choose_db_engine
+    db_collect
+
+    # A resume
+    Summary
+
     # License part
     license_verify
     license_download_and_extract
@@ -1600,7 +1972,7 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     install_db_engine
     db_create
     install_composer
-    prepare_ioncube || section "Skipping ionCube (user choice)"
+    prepare_ioncube
     
     # App setup & build
     detect_web_user_group
@@ -1612,7 +1984,14 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
     setup_systemd_queue
     
     configure_nginx_http_only
-    certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
+    if [[ -n "${certbot_choice-}" ]]; then
+        echo "Skipping certbot/ssl prompt, using provided ssl mode."
+    elif [[ "$ASSUME_YES" == 1 ]]; then
+        certbot_choice="install"
+        echo "Assuming certbot/ssl mode as install."
+    else
+        certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
+    fi
 
     if [[ "$WEB" == "nginx" ]]; then
         case "$certbot_choice" in
@@ -1719,7 +2098,6 @@ elif [[ "$CHOICE" == "update" ]]; then
         echo "DocumentRoot: ${APP_DIR}/public"
         echo "Web server:   ${WEB}"
         echo "DB engine:    ${DB_ENGINE}"
-        echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
         php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
         echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
         echo "Log:          ${LOG}"
@@ -1736,7 +2114,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     
     exit 0
     
-elif [[ "$CHOICE" == "delete" ]]; then
+elif [[ "$CHOICE" == "uninstall" ]]; then
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
         run "Remove application directory ${APP_DIR}" rm -rf "$APP_DIR"
