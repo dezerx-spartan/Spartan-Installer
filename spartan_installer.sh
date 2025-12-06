@@ -1615,7 +1615,8 @@ Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
 
 Proceed with installation (live output)?" 22 72 || exit 1
     else
-        cat <<'EOF'
+        cat <<EOF
+
 Summary:
 - Product = ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
 - Domain = ${DOMAIN}
@@ -1627,6 +1628,7 @@ Summary:
 - DB Port = ${DB_PORT}
 - DB Name = ${DB_NAME}
 - DB User = ${DB_USER}
+
 EOF
     fi
 }
@@ -1936,17 +1938,6 @@ EOF
 # ---------------- Flow ----------------
 
 parse_args "$@"
-
-# echo "▶ Parsed values:"
-# echo "   ACTION      = ${ACTION-}"
-# echo "   ASSUME_YES  = ${ASSUME_YES-}"
-# echo "   LICENSE_KEY = ${LICENSE_KEY:+${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}}"
-# echo "   DOMAIN      = ${DOMAIN-}"
-# echo "   WEB         = ${WEB-}"
-# echo "   DB_ENGINE   = ${DB_ENGINE-}"
-# echo "   PRODUCT_ID  = ${PRODUCT_ID:-}"
-# echo "   PRODUCT_NAME= ${PRODUCT_NAME:-}"
-# echo "   APP_DIR     = ${APP_DIR:-}"
 
 [[ "$SHOW_HELP" == 1 ]] && show_help
 [[ "$NONINTERACTIVE" == 1 ]] && noninteractive_checks
