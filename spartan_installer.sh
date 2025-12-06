@@ -340,7 +340,7 @@ ask_update_app_dir(){
 }
 
 choose_webserver(){
-    if [[ -z "$WEB" ]]; then
+    if [[ -z "${WEB:-}" ]]; then
         WEB=$(whiptail --title "$TITLE" --radiolist "Select your web server" 15 70 2 \
             "nginx"  "Nginx (recommended)" ON \
             "apache" "Apache (not a option)" OFF \
@@ -360,7 +360,7 @@ choose_webserver(){
 # }
 
 choose_db_engine(){
-    if [[ -z "$DB_ENGINE" ]]; then
+    if [[ -z "${DB_ENGINE:-}" ]]; then
     DB_ENGINE=$(whiptail --title "$TITLE" --radiolist "Choose database server" 12 70 2 \
         "mariadb" "MariaDB Server" ON \
         "mysql"   "MySQL Server" OFF \
@@ -2114,7 +2114,6 @@ elif [[ "$CHOICE" == "update" ]]; then
         echo "DocumentRoot: ${APP_DIR}/public"
         echo "Web server:   ${WEB}"
         echo "DB engine:    ${DB_ENGINE}"
-        echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
         php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
         echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
         echo "Log:          ${LOG}"
