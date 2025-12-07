@@ -36,7 +36,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Copy & Paste the command**
 
    ```bash
-   sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer/dev/spartan_installer.sh')"
+   sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/dezerx-spartan/Spartan-Installer/dev/spartan_installer.sh')"
    ```
 
 2. **Follow the interactive prompts to complete the installation.**
@@ -46,7 +46,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Clone the repository:**
 
    ```bash
-   git clone -b dev https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer.git
+   git clone -b dev https://github.com/dezerx-spartan/Spartan-Installer.git
    cd Spartan-Installer
    ```
 
@@ -60,6 +60,6 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 ## Troubleshooting
 
-- Check the installer log at `/var/log/dezerx_installer.log` for details.
+- Check the installer log at `/var/log/spartan_installer.log` for details.
 - Ensure all required ports (80, 443, database) are open.
 - For SSL issues, verify DNS records and domain accessibility.
