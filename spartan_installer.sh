@@ -183,6 +183,7 @@ app_prepare_dir(){
         mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
+        mv -- "${APP_DIR}/Modules" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/resources/css/app.css" "${update_tmpdir}/" 2>/dev/null || true
     fi
@@ -198,6 +199,7 @@ app_prepare_dir(){
     if [[ $CHOICE == "update" ]]; then
         mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
         mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
+        mv -- "${update_tmpdir}/Modules" "${APP_DIR}/" 2>/dev/null || true
         mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
     fi
 }
@@ -716,7 +718,7 @@ license_download_and_extract(){
     local TYPE
     if file -b "${FILE}" | grep -qi "zip"; then
         TYPE="zip"
-        elif file -b "${FILE}" | grep -Eiq "gzip|tar"; then
+    elif file -b "${FILE}" | grep -Eiq "gzip|tar"; then
         TYPE="targz"
     else
         case "$URL" in
