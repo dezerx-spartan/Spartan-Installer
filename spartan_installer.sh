@@ -234,6 +234,7 @@ app_merge_json(){
     ' "$old" "$new" > "${merged}.tmp" || { echo "Failed to merge $(basename ${old}) -> $(basename ${new})"; return 1; }
 
     mv -- "${merged}.tmp" "$merged"
+    rm -f "$old" "$new"
     section "Merged to ${merged}"
 }
 
