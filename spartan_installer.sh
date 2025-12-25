@@ -180,12 +180,12 @@ app_prepare_dir(){
     if [[ $CHOICE == "update" ]]; then
         update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
 
+        run "Saving dashboard theme: php artisan theme:backup --save" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save" || true
         mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/Modules" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
-        run "Saving dashboard theme: php artisan theme:backup --save" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"
     fi
 
     (
