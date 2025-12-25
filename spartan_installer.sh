@@ -180,12 +180,12 @@ app_prepare_dir(){
     if [[ $CHOICE == "update" ]]; then
         update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
 
+        run "Saving dashboard theme: php artisan theme:backup --save" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save" || true
         mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/Modules" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
-        mv -- "${APP_DIR}/resources/css/app.css" "${update_tmpdir}/" 2>/dev/null || true
     fi
 
     (
@@ -206,11 +206,6 @@ app_prepare_dir(){
 
 app_restore_files(){
     mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
-    if [[ -f "${update_tmpdir}/app.css" ]]; then
-        mkdir -p "${APP_DIR}/resources/css" 2>/dev/null || { echo "Failed to recreate 'resources/css'"; }
-        mv -- "${update_tmpdir}/app.css" "${APP_DIR}/resources/css/" 2>/dev/null || true
-    fi
-
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
 }
 
@@ -1191,6 +1186,8 @@ app_update_steps(){
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
+    run "Restoring dashboard theme: php artisan theme:backup --restore" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --restore"
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
 }
 
 app_restore_steps(){
