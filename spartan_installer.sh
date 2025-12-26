@@ -46,8 +46,9 @@ run(){
     fi
     
     section "$desc"
-    cmdshow "$*"
+    cmdshow "$cmdstr"
     "$@"
+    return $?
 }
 
 need_root(){ [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }; }
@@ -176,11 +177,26 @@ app_prepare_dir(){
     [ "$APP_DIR" = "/" ] && { echo "Refusing to run on /"; return 1; }
 
     update_tmpdir=""
+    css_save_methode=""
 
     if [[ $CHOICE == "update" ]]; then
         update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
 
-        run "Saving dashboard theme: php artisan theme:backup --save" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save" || true
+        if php "${APP_DIR}/artisan" help theme:backup --no-interaction >/dev/null 2>&1; then
+            css_save_methode="php"
+        else
+            css_save_methode="fallback"
+        fi
+
+        if [[ "$css_save_methode" == "php" ]]; then
+            if ! run "Saving dashboard theme: php artisan theme:backup --save" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"; then
+                css_save_methode="fallback"
+                mv -- "${APP_DIR}/resources/css/" "${update_tmpdir}/" 2>/dev/null || true
+            fi
+        else
+            mv --debug -- "${APP_DIR}/resources/css/" "${update_tmpdir}/"
+        fi
+
         mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
         mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
@@ -206,6 +222,9 @@ app_prepare_dir(){
 
 app_restore_files(){
     mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
+    if [[ "$css_save_methode" == "fallback" ]]; then
+        rsync -a "${update_tmpdir}/css/" "${APP_DIR}/resources/css/"
+    fi
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
 }
 
@@ -647,8 +666,9 @@ ask_license_key(){
 license_verify(){
     local API="https://market.dezerx.com/api/license/verify"
     local TMP; TMP="$(mktemp)"
+    local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     section "Verify license (GET)"
-    cmdshow "curl -fsS -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
+    cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
     local CODE
     CODE=$(curl -sS -X GET "$API" \
         -H "Authorization: Bearer ${LICENSE_KEY}" \
@@ -677,9 +697,10 @@ license_download_and_extract(){
     local API="https://market.dezerx.com/api/license/download"
     local TMPDIR; TMPDIR="$(mktemp -d)"
     local RESP_FILE="$TMPDIR/resp.json"
+    local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     
     section "Request one-time download link (POST)"
-    cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ***' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
+    cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
     
     local CODE
     CODE=$(curl -sS -X POST "$API" \
