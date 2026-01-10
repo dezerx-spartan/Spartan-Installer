@@ -216,7 +216,6 @@ app_prepare_dir(){
             "${APP_DIR}/public/favicon.ico" \
             "${APP_DIR}/public/favicon.svg" \
             "${update_tmpdir}/favicon/" 2>/dev/null || true
-        ls -a "${update_tmpdir}/favicon/"
         rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
@@ -251,7 +250,7 @@ app_prepare_dir(){
 
 app_restore_files(){
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
-    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" || true
+    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
     if [[ "$css_save_methode" == "fallback" ]]; then
         run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
