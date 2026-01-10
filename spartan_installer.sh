@@ -54,6 +54,7 @@ run(){
 need_root(){ [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 die(){ echo; hr; echo "ERROR: $*" >&2; echo "See log: $LOG"; hr; exit 1; }
+error(){ echo; hr; echo "ERROR: $*" >&2; echo "See log: $LOG"; hr; }
 
 detect_os(){ source /etc/os-release || true; DISTRO_ID="${ID:-unknown}"; DISTRO_VER="${VERSION_ID:-}"; section "Detected OS: ${DISTRO_ID} ${DISTRO_VER}"; }
 
@@ -194,14 +195,34 @@ app_prepare_dir(){
                 run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
             fi
         else
+            css_save_methode="fallback"
             run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
         fi
 
-        mv -- "${APP_DIR}/storage" "${update_tmpdir}/" 2>/dev/null || true
-        mv -- "${APP_DIR}/public" "${update_tmpdir}/" 2>/dev/null || true
-        mv -- "${APP_DIR}/modules_statuses.json" "${update_tmpdir}/" 2>/dev/null || true
-        mv -- "${APP_DIR}/Modules" "${update_tmpdir}/" 2>/dev/null || true
-        mv -- "${APP_DIR}/.env" "${update_tmpdir}/" 2>/dev/null || true
+        if [[ -d "${APP_DIR}/resources/js/pages/Portal" ]]; then
+            portals="$(find "${APP_DIR}/resources/js/pages/Portal" -mindepth 1 -maxdepth 1 -type d ! -iname "default" -printf '.' | wc -c)"
+            if [[ "$portals" -gt 0 ]]; then
+                [[ ! -d "${update_tmpdir}/Portals" ]] && mkdir -p "${update_tmpdir}/Portals"
+                run "Saving dashboard portals" bash -lc "rsync -a --remove-source-files --exclude='Default' --exclude='default' '${APP_DIR}/resources/js/pages/Portal/' '${update_tmpdir}/Portals/' 2>/dev/null || true"
+            else
+                echo "No custom portals found to save - skipping"
+            fi
+        else
+            echo "Portal source directory does not exist - skipping"
+        fi
+
+        [[ ! -d "${update_tmpdir}/favicon" ]] && mkdir -p "${update_tmpdir}/favicon"
+        rsync -a --remove-source-files --ignore-missing-args \
+            "${APP_DIR}/public/favicon.ico" \
+            "${APP_DIR}/public/favicon.svg" \
+            "${update_tmpdir}/favicon/" 2>/dev/null || true
+        ls -a "${update_tmpdir}/favicon/"
+        rsync -a --remove-source-files --ignore-missing-args \
+            "${APP_DIR}/storage" \
+            "${APP_DIR}/public" \
+            "${APP_DIR}/modules_statuses.json" \
+            "${APP_DIR}/.env" \
+            "${update_tmpdir}/" 2>/dev/null || true
     fi
 
     (
@@ -213,17 +234,26 @@ app_prepare_dir(){
     )
 
     if [[ $CHOICE == "update" ]]; then
-        mv -- "${update_tmpdir}/storage" "${APP_DIR}/" 2>/dev/null || true
-        mv -- "${update_tmpdir}/public" "${APP_DIR}/" 2>/dev/null || true
-        mv -- "${update_tmpdir}/Modules" "${APP_DIR}/" 2>/dev/null || true
+        rsync -aI --remove-source-files --ignore-missing-args \
+            "${update_tmpdir}/storage" \
+            "${update_tmpdir}/public" \
+            "${update_tmpdir}/Modules" \
+            "${APP_DIR}/" 2>/dev/null || true
         mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
+        if [[ -d "${update_tmpdir}/Portals" ]]; then
+            mkdir -p "${APP_DIR}/resources/js/pages/Portal"
+            run "Restoring dashboard portals" bash -lc "rsync -a '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
+        else
+            section "No portal backup found - nothing to restore"
+        fi
     fi
 }
 
 app_restore_files(){
-    mv -- "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
+    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
+    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" || true
     if [[ "$css_save_methode" == "fallback" ]]; then
-        run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -a '${update_tmpdir}/css/' '${APP_DIR}/resources/css/'"
+        run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
 }
@@ -677,7 +707,7 @@ license_verify(){
         -H "Content-Type: application/json" \
     -o "$TMP" -w '%{http_code}') || CODE=0
     
-    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$TMP" 2>/dev/null || true; die "Verify API returned HTTP ${CODE}."; }
+    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$TMP" 2>/dev/null || true; error "Verify API returned HTTP ${CODE}."; return 1; }
     
     local SUCCESS IS_ACTIVE PNAME PDID PDOMAIN MSG
     SUCCESS=$(jq -r '.success // false' "$TMP") || SUCCESS=false
@@ -687,7 +717,7 @@ license_verify(){
     PDOMAIN=$(jq -r '.data.domain // empty' "$TMP")
     MSG=$(jq -r '.message // empty' "$TMP")
     
-    [[ "$SUCCESS" == "true" && "$IS_ACTIVE" == "true" ]] || { echo "API response:"; cat "$TMP"; die "License not active/valid: ${MSG:-Unknown}"; }
+    [[ "$SUCCESS" == "true" && "$IS_ACTIVE" == "true" ]] || { echo "API response:"; cat "$TMP"; error "License not active/valid: ${MSG:-Unknown}"; return 1; }
     
     echo "License OK: ${PNAME:-${PRODUCT_NAME}} (product_id=${PDID:-${PRODUCT_ID}})"
     [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN" || true
@@ -710,7 +740,7 @@ license_download_and_extract(){
         -H "Content-Type: application/json" \
     -o "$RESP_FILE" -w '%{http_code}') || CODE=0
     
-    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; die "Download-token API returned HTTP ${CODE}."; }
+    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; error "Download-token API returned HTTP ${CODE}."; return 1; }
     
     local SUCCESS URL EXPIRES NAME SIZE MSG
     SUCCESS=$(jq -r '.success // false' "$RESP_FILE") || SUCCESS=false
@@ -720,7 +750,7 @@ license_download_and_extract(){
     NAME=$(jq -r '.data.product_name // empty' "$RESP_FILE")
     SIZE=$(jq -r '.data.file_size // empty' "$RESP_FILE")
     
-    [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; die "No valid download_url in response: ${MSG:-Unknown}"; }
+    [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
     
     section "License OK – downloading ${NAME:-payload}"
     echo "Download URL (one-time): $URL"
@@ -729,19 +759,25 @@ license_download_and_extract(){
     
     local OUT="$TMPDIR/app"
     mkdir -p "$OUT"
-    local FILE="$OUT/payload"
-    curl -fL "$URL" -o "${FILE}" || die "Failed to download application payload."
-    
+    (
+        cd "$OUT" && curl -fL -OJ "$URL"
+    ) || { error "Failed to download application payload."; return 1; }
+
+    local FILE="$(find "$OUT" -maxdepth 1 -type f -print -quit)" 
+    local EXT="$(file -b "$FILE")"
     local TYPE
     if file -b "${FILE}" | grep -qi "zip"; then
         TYPE="zip"
     elif file -b "${FILE}" | grep -Eiq "gzip|tar"; then
         TYPE="targz"
     else
-        case "$URL" in
+        case "$FILE" in
             *.zip) TYPE="zip" ;;
             *.tar.gz|*.tgz) TYPE="targz" ;;
-            *) die "Unknown archive type (expected zip or tar.gz)." ;;
+            *) 
+                error "Unknown archive type (expected zip or tar.gz)."
+                return 1
+                ;;
         esac
     fi
     
@@ -763,7 +799,7 @@ license_download_and_extract(){
     
     app_prepare_dir
     section "Sync application to ${APP_DIR}"
-    rsync -a "$SRC"/ "${APP_DIR}/"
+    rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
 
     if [[ $CHOICE == "update" ]]; then
         app_restore_files
@@ -771,7 +807,7 @@ license_download_and_extract(){
         rmdir -- "${update_tmpdir}" 2>/dev/null || true
     fi
 
-    [[ -f "${APP_DIR}/composer.json" ]] || die "composer.json missing after extraction; invalid payload?"
+    [[ -f "${APP_DIR}/composer.json" ]] || { error "composer.json missing after extraction; invalid payload?"; exit 1; }
     echo "App synced to ${APP_DIR}"
 }
 
@@ -1207,7 +1243,10 @@ app_update_steps(){
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
-    [[ "$css_save_methode" == "php" ]] && run "Restoring dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --restore"
+    if [[ "$css_save_methode" == "php" ]]; then
+        run "Restoring dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --restore"
+        run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    fi
     run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
 }
 
@@ -2083,17 +2122,20 @@ elif [[ "$CHOICE" == "update" ]]; then
     app_maintenance_on
     app_get_dir
     app_get_var
+    detect_web_user_group
 
     # Backup app
     create_backups
 
     # License part
-    license_verify
+    if ! license_verify; then
+        app_maintenance_off
+        exit 1
+    fi
     if ! license_download_and_extract; then
         restore_backups
     fi
     
-    detect_web_user_group
     prepare_ioncube || restore_backups
     # Install and set perms
     if app_setup_dir && app_update_steps; then
