@@ -219,6 +219,7 @@ app_prepare_dir(){
         rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
+            "${APP_DIR}/Modules" \
             "${APP_DIR}/modules_statuses.json" \
             "${APP_DIR}/.env" \
             "${update_tmpdir}/" 2>/dev/null || true
