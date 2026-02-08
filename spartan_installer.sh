@@ -17,6 +17,7 @@ BACKUP_DIR="/tmp/spartan"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
+PHP_VER="8.4"
 
 ACTION=""
 ASSUME_YES=0
@@ -481,28 +482,39 @@ enable_php_repo_and_update(){
             fi
 
             if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list"; then
-                run "Adding sury repo" bash -lc "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
+                run "Adding sury repo" bash -c "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
             fi
             run "Updating apt repositories" apt-get update
         ;;
         ubuntu)
             pm_install software-properties-common curl apt-transport-https ca-certificates gnupg lsb-release
-            if [[ "$DISTRO_ID" == "ubuntu" ]]; then run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php; fi
+            if ! grep -q "^deb .*ondrej/php" /etc/apt/sources.list /etc/apt/sources.list.d/*; then 
+                run "Add PPA ondrej/php" add-apt-repository -y ppa:ondrej/php
+            fi
             run "Updating apt repositories" apt-get update
         ;;
         fedora)
             pm_install dnf-plugins-core
-            run "dnf module reset php" bash -lc "dnf -y module reset php || true"
-            run "dnf module enable php (latest stream available)" bash -lc "dnf -y module enable php || true"
+            local MODULE_NAME="php"
+            if dnf module list php | grep -q "$PHP_VER"; then
+                local MODULE_NAME="php:${PHP_VER}"
+            else
+                run "install remi repo" pm_install "" "https://rpms.remirepo.net/fedora/remi-release-$(rpm -E %fedora).rpm || true"
+                local MODULE_NAME="php:remi-${PHP_VER}"
+            fi
+            run "dnf module reset php" dnf -y module reset php || true
+            run "dnf module enable ${MODULE_NAME}" dnf -y module enable "${MODULE_NAME}" || true
         ;;
         centos|rhel|almalinux|rocky)
-            pm_install dnf-plugins-core || true
+            pm_install dnf-plugins-core epel-release || true
             if have dnf; then
-                run "Install Remi repo" bash -lc "dnf -y install https://rpms.remirepo.net/enterprise/remi-release-\$(rpm -E %rhel).rpm || true"
-                run "dnf module reset php" bash -lc "dnf -y module reset php || true"
-                run "dnf module enable php (remi default)" bash -lc "dnf -y module enable php:remi || true"
-            else
-                run "Install Remi repo (yum)" bash -lc "yum -y install https://rpms.remirepo.net/enterprise/remi-release-\$(rpm -E %rhel).rpm || true"
+                run "Install Remi repo" pm_install "" "https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm || true"
+                run "dnf module reset php" dnf -y module reset php || true
+                if dnf module list php | grep -q "remi-${PHP_VER}"; then
+                    run "dnf module enable php:remi-${PHP_VER}" dnf -y module enable php:remi-${PHP_VER} || true
+                else
+                    error "PHP ${PHP_VER} not found in remi repo."
+                fi
             fi
         ;;
     esac
@@ -512,14 +524,17 @@ install_php_stack(){
     case "$DISTRO_ID" in
         debian|ubuntu)
             enable_php_repo_and_update
-            run "Install PHP stack (latest available)" apt-get install --no-install-recommends -y php php-cli php-fpm php-gd php-mysql php-mbstring php-bcmath php-xml php-curl php-zip
+            run "Install PHP stack (latest available)" apt-get install --no-install-recommends -y php${PHP_VER} php${PHP_VER}-cli php${PHP_VER}-fpm \
+            php${PHP_VER}-gd php${PHP_VER}-mysql php${PHP_VER}-mbstring php${PHP_VER}-bcmath php${PHP_VER}-xml php${PHP_VER}-curl php${PHP_VER}-zip \
+            php${PHP_VER}-intl php${PHP_VER}-opcache
         ;;
         fedora|centos|rhel|almalinux|rocky)
             if have dnf; then
                 enable_php_repo_and_update
-                run "Install PHP stack (latest available)" dnf -y install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip
+                run "Install PHP stack (latest available)" dnf -y install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml \
+                php-curl php-zip php-intl php-opcache
             else
-                pm_install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip || true
+                pm_install php php-cli php-fpm php-gd php-mysqlnd php-mbstring php-bcmath php-xml php-curl php-zip php-intl php-opcache || true
             fi
         ;;
     esac
@@ -812,7 +827,7 @@ license_download_and_extract(){
 
 # ---------------- PHP-FPM helpers ----------------
 find_php_fpm_service(){ systemctl list-unit-files --type=service | awk '/php.*-fpm\.service/ {print $1}' | sort -r | head -n1; }
-php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.2"; }
+php_minor(){ php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "${PHP_VER}"; }
 start_php_fpm(){
     local svc; svc="$(find_php_fpm_service)"
     if [[ -n "$svc" ]]; then run "Enable/start ${svc}" systemctl enable --now "$svc"; else run "Enable/start php-fpm (generic)" systemctl enable --now php-fpm || true; fi
@@ -832,8 +847,10 @@ php_fpm_find_conf(){
     
     case "$DISTRO_ID" in
         debian|ubuntu)
-            candidates+=("/etc/php/*/fpm/pool.d/www.conf")
             candidates+=("/etc/php/$(php_minor)/fpm/pool.d/www.conf")
+            shopt -s nullglob
+            candidates+=(/etc/php/*/fpm/pool.d/www.conf)
+            shopt -u nullglob
         ;;
         fedora|centos|rhel|almalinux|rocky)
             candidates+=("/etc/php-fpm.d/www.conf")
@@ -846,7 +863,27 @@ php_fpm_find_conf(){
     
     return 1
 }
-
+php_find_fpm_conf_dir(){
+    local candidates=()
+    
+    case "$DISTRO_ID" in
+        debian|ubuntu)
+            candidates+=("/etc/php/$(php_minor)/fpm/conf.d")
+            shopt -s nullglob
+            candidates+=(/etc/php/*/fpm/conf.d)
+            shopt -u nullglob
+        ;;
+        fedora|centos|rhel|almalinux|rocky)
+            candidates+=("/etc/php.d")
+        ;;
+    esac
+    
+    for dir in "${candidates[@]}"; do
+        [[ -d "$dir" ]] && { echo "$dir"; return 0; }
+    done
+    
+    return 1
+}
 
 # ---------------- ionCube ----------------
 
@@ -1157,6 +1194,37 @@ config_php_fpm(){
     run "Updating listen user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.owner.*|listen.owner = ${APP_USER}|" "${cfg}"
     run "Updating listen group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*listen\.group.*|listen.group = ${APP_GROUP}|" "${cfg}"
     restart_php_fpm
+}
+
+config_opcache(){
+    local ini_file; ini_file="$(php_find_fpm_conf_dir)/10-opcache-custom.ini"
+
+    if [[ -f "${ini_file}" ]]; then
+        section "Updating OPcache configuration"
+        run "Removing existing OPcache config" rm -f "${ini_file}" || true
+        run "Creating OPcache configuration file at: ${ini_file}" touch "${ini_file}" || true
+    else
+        section "Configuring OPcache"
+        run "Creating OPcache configuration file at: ${ini_file}" touch "${ini_file}" || true
+    fi
+
+    run "writing OPcache config" bash -c "cat > '${ini_file}' <<EOF
+opcache.enable=1
+opcache.enable_cli=1
+
+opcache.memory_consumption=512
+
+opcache.interned_strings_buffer=16
+
+opcache.max_accelerated_files=10000
+
+opcache.validate_timestamps=0
+opcache.revalidate_freq=2
+
+opcache.fast_shutdown=1
+
+opcache.save_comments=1
+EOF"
 }
 
 env_write_value(){
@@ -2036,6 +2104,7 @@ if [[ "$CHOICE" == "install" ]]; then
     # App setup & build
     detect_web_user_group
     config_php_fpm
+    config_opcache
     app_env_setup
     app_install_steps
     apply_permissions
@@ -2131,11 +2200,13 @@ elif [[ "$CHOICE" == "update" ]]; then
         app_maintenance_off
         exit 1
     fi
+    pm_update_upgrade 1 || restore_backups
     if ! license_download_and_extract; then
         restore_backups
     fi
     
     prepare_ioncube || restore_backups
+    config_opcache
     # Install and set perms
     if app_setup_dir && app_update_steps; then
         apply_permissions

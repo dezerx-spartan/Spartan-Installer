@@ -43,7 +43,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 ### One line - non interactive (advanced)
 
-1. **Copy & Paste the command then change the options to your liking**
+1. **Copy & Paste the command then remplace placeholders values with your own**
    ```bash
    sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/dezerx-spartan/Spartan-Installer/dev/spartan_installer.sh') -- --non-interactive --install --license=XXXXXXXXXXXXXXX_XXXXXX --domain dash.example.com --webserver=nginx --ssl-mode=install --db-type=mariadb"
    ```
