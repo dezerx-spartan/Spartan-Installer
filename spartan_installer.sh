@@ -61,7 +61,7 @@ detect_os(){ source /etc/os-release || true; DISTRO_ID="${ID:-unknown}"; DISTRO_
 
 pm_install(){
     local desc
-    if [[ "$1" =~ [[:space:]:] ]]; then
+    if [[ -n "$1" ]] && [[ "$1" =~ [[:space:]:] ]]; then
         desc="$1"
         shift
     else
@@ -497,10 +497,10 @@ enable_php_repo_and_update(){
             pm_install dnf-plugins-core
             local MODULE_NAME="php"
             if dnf module list php | grep -q "$PHP_VER"; then
-                local MODULE_NAME="php:${PHP_VER}"
+                MODULE_NAME="php:${PHP_VER}"
             else
-                run "install remi repo" pm_install "" "https://rpms.remirepo.net/fedora/remi-release-$(rpm -E %fedora).rpm || true"
-                local MODULE_NAME="php:remi-${PHP_VER}"
+                pm_install "Installing remi repo" "https://rpms.remirepo.net/fedora/remi-release-$(rpm -E %fedora).rpm" || true
+                MODULE_NAME="php:remi-${PHP_VER}"
             fi
             run "dnf module reset php" dnf -y module reset php || true
             run "dnf module enable ${MODULE_NAME}" dnf -y module enable "${MODULE_NAME}" || true
@@ -508,7 +508,7 @@ enable_php_repo_and_update(){
         centos|rhel|almalinux|rocky)
             pm_install dnf-plugins-core epel-release || true
             if have dnf; then
-                run "Install Remi repo" pm_install "" "https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm || true"
+                pm_install "Installing Remi repo" "https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm" || true
                 run "dnf module reset php" dnf -y module reset php || true
                 if dnf module list php | grep -q "remi-${PHP_VER}"; then
                     run "dnf module enable php:remi-${PHP_VER}" dnf -y module enable php:remi-${PHP_VER} || true
