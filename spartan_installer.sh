@@ -2221,7 +2221,6 @@ elif [[ "$CHOICE" == "update" ]]; then
         license_download_and_extract
         
         prepare_ioncube
-        false
         config_opcache
         # Install and set perms
         app_setup_dir
