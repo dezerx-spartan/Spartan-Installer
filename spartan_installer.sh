@@ -6,7 +6,6 @@
 set -euo pipefail
 trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
-VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 DOMAIN=""
@@ -84,30 +83,22 @@ pm_update_upgrade(){
             run "Updating apt repositories" apt-get update
             run "Upgrading apt repositories" apt-get upgrade -y
             if ((full)); then
-                run "apt dist-upgrade" apt-get -y dist-upgrade;
+                run "apt dist-upgrade" apt-get dist-upgrade -y;
             fi
         ;;
-        centos|rhel|almalinux|rocky)
+        centos|rhel|almalinux|rocky|fedora)
             if have dnf; then
-                run "dnf makecache" dnf -y makecache
-                if ! run "dnf upgrade" dnf -y upgrade; then
-                    echo "dnf upgrade failed, falling back to distro-sync"
-                    run "dnf distro-sync" dnf -y distro-sync
+                if ! run "dnf upgrade" dnf upgrade --refresh -y; then
+                    echo "dnf upgrade failed, attempting distro-sync"
+                    run "dnf distro-sync" dnf distro-sync -y
                 fi
 
                 if ((full)); then
-                    run "dnf dist-upgrade" dnf -y distro-sync
+                    run "dnf dist-upgrade" dnf upgrade --allowerasing -y
                 fi
             else
-                run "yum makecache" yum -y makecache
-                run "yum upgrade" yum -y upgrade
-            fi
-        ;;
-        fedora)
-            run "dnf makecache" dnf -y makecache
-            run "dnf upgrade" dnf -y upgrade
-            if ((full)); then
-                run "dnf dist-upgrade" dnf -y distro-sync
+                run "yum makecache" yum makecache fast -y
+                run "yum upgrade" yum upgrade -y
             fi
         ;;
     esac
@@ -1324,7 +1315,6 @@ app_restore_steps(){
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
-    app_maintenance_off
 }
 
 apply_permissions(){
@@ -1607,6 +1597,7 @@ restore_backups() {
     restore_ioncube_backup
     app_restore_steps
     apply_permissions
+    app_maintenance_off
     die "Update failed, backup restored."
 }
 
@@ -2067,6 +2058,9 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
+VERSION=$(curl -s "https://api.github.com/repos/dezerx-spartan/Spartan-Installer/releases/latest" | jq -r .tag_name)
+VERSION=${VERSION:-"Undefined"}
+
 echo -e "Script version ${VERSION}\n"
 
 if [[ -z "$ACTION" ]]; then
@@ -2193,22 +2187,26 @@ elif [[ "$CHOICE" == "update" ]]; then
     detect_web_user_group
 
     # Backup app
-    create_backups
+    if ! create_backups; then
+        app_maintenance_off
+        die "Couldn't make backups. Abording"
+    fi
 
     # License part
     if ! license_verify; then
         app_maintenance_off
         exit 1
     fi
-    pm_update_upgrade 1 || restore_backups
-    if ! license_download_and_extract; then
-        restore_backups
-    fi
-    
-    prepare_ioncube || restore_backups
-    config_opcache
-    # Install and set perms
-    if app_setup_dir && app_update_steps; then
+
+    safe_update() {
+        exit 1
+        license_download_and_extract
+        
+        prepare_ioncube
+        config_opcache
+        # Install and set perms
+        app_setup_dir
+        app_update_steps
         apply_permissions
         setup_cron
         setup_systemd_queue
@@ -2241,12 +2239,9 @@ elif [[ "$CHOICE" == "update" ]]; then
         [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
         echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
         hr
-    else
-        restore_backups
-    fi
-    
-    exit 0
-    
+        exit 0
+    }
+    safe_update || restore_backups
 elif [[ "$CHOICE" == "uninstall" ]]; then
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
