@@ -6,7 +6,6 @@
 set -euo pipefail
 trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
-VERSION="1.2.1-beta-hotfix"
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
 DOMAIN=""
@@ -84,30 +83,22 @@ pm_update_upgrade(){
             run "Updating apt repositories" apt-get update
             run "Upgrading apt repositories" apt-get upgrade -y
             if ((full)); then
-                run "apt dist-upgrade" apt-get -y dist-upgrade;
+                run "apt dist-upgrade" apt-get dist-upgrade -y;
             fi
         ;;
-        centos|rhel|almalinux|rocky)
+        centos|rhel|almalinux|rocky|fedora)
             if have dnf; then
-                run "dnf makecache" dnf -y makecache
-                if ! run "dnf upgrade" dnf -y upgrade; then
-                    echo "dnf upgrade failed, falling back to distro-sync"
-                    run "dnf distro-sync" dnf -y distro-sync
+                if ! run "dnf upgrade" dnf upgrade --refresh -y; then
+                    echo "dnf upgrade failed, attempting distro-sync"
+                    run "dnf distro-sync" dnf distro-sync -y
                 fi
 
                 if ((full)); then
-                    run "dnf dist-upgrade" dnf -y distro-sync
+                    run "dnf dist-upgrade" dnf upgrade --allowerasing -y
                 fi
             else
-                run "yum makecache" yum -y makecache
-                run "yum upgrade" yum -y upgrade
-            fi
-        ;;
-        fedora)
-            run "dnf makecache" dnf -y makecache
-            run "dnf upgrade" dnf -y upgrade
-            if ((full)); then
-                run "dnf dist-upgrade" dnf -y distro-sync
+                run "yum makecache" yum makecache fast -y
+                run "yum upgrade" yum upgrade -y
             fi
         ;;
     esac
@@ -1324,7 +1315,6 @@ app_restore_steps(){
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
-    app_maintenance_off
 }
 
 apply_permissions(){
@@ -1601,13 +1591,15 @@ restore_db_backup() {
 }
 
 restore_backups() {
+    section "Something went wrong! restoring backups..."
     restore_app_backup
     restore_db_backup
     restore_php_backup
     restore_ioncube_backup
     app_restore_steps
     apply_permissions
-    die "Update failed, backup restored."
+    app_maintenance_off
+    die "Backups restored!"
 }
 
 app_get_dir() {
@@ -1836,6 +1828,10 @@ parse_args() {
                 ACTION="update"
                 shift
                 ;;
+            --test)
+                ACTION="test"
+                shift
+                ;;
             --delete|--uninstall)
                 ACTION="uninstall"
                 shift
@@ -1983,7 +1979,7 @@ parse_args() {
 
 noninteractive_checks(){
     local missing_args required_args
-    if [[ "$ACTION" == "install" || -z "$ACTION" ]]; then
+    if [[ "$ACTION" == "install" || "$ACTION" == "test" || -z "$ACTION" ]]; then
         missing_args=()
         required_args=(
             ACTION
@@ -2011,7 +2007,7 @@ noninteractive_checks(){
             echo "required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
         fi
     else
-        echo "non-interactive mode not available for uninstalls at the moment."
+        echo "non-interactive mode not available for this action at the moment."
         exit 1
     fi
 }
@@ -2067,7 +2063,13 @@ detect_os
 pm_update_upgrade 0
 install_essentials
 
-echo -e "Script version ${VERSION}\n"
+echo
+hr
+VERSION=$(curl -fs "https://api.github.com/repos/dezerx-spartan/Spartan-Installer/releases/latest" | jq -r .tag_name)
+VERSION=${VERSION:-"Undefined"}
+echo -e "Script version ${VERSION}"
+hr
+echo
 
 if [[ -z "$ACTION" ]]; then
     main_menu
@@ -2167,24 +2169,32 @@ if [[ "$CHOICE" == "install" ]]; then
     app_maintenance_off
 
     section "All done!"
-    echo "Domain:       ${DOMAIN}"
-    echo "App Path:     ${APP_DIR}"
-    echo "DocumentRoot: ${APP_DIR}/public"
-    echo "Web server:   ${WEB}"
-    echo "DB engine:    ${DB_ENGINE}"
-    echo "Product:      ${PRODUCT_NAME} (ID: ${PRODUCT_ID})"
-    php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
-    echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    echo "Log:          ${LOG}"
+    echo
+    hr 
+    echo "Summary:"
     hr
-    echo "Useful:"
-    echo " systemctl status dezerx.service"
-    echo " crontab -l"
-    [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
-    echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
+    echo "- Domain:       ${DOMAIN:-}"
+    echo "- App Path:     ${APP_DIR:-}"
+    echo "- Web server:   ${WEB:-}"
+    [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
+    php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
+    echo "- DB:"
+    echo "-  Engine:      ${DB_ENGINE:-}"
+    echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
+    echo "- Logs:"
+    echo "-  Script:      ${LOG:-}"
+    echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
+    [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
     hr
+    echo "Useful Commands:"
+    hr
+    echo "- Check Services: systemctl status dezerx.service"
+    echo "- Check Cron:     crontab -l"
+    echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
+    hr
+    echo
+
     exit 0
-    
 elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
     app_maintenance_on
@@ -2193,22 +2203,29 @@ elif [[ "$CHOICE" == "update" ]]; then
     detect_web_user_group
 
     # Backup app
-    create_backups
+    if ! create_backups; then
+        app_maintenance_off
+        die "Couldn't make backups. Abording"
+    fi
 
     # License part
     if ! license_verify; then
         app_maintenance_off
         exit 1
     fi
-    pm_update_upgrade 1 || restore_backups
-    if ! license_download_and_extract; then
-        restore_backups
-    fi
-    
-    prepare_ioncube || restore_backups
-    config_opcache
-    # Install and set perms
-    if app_setup_dir && app_update_steps; then
+
+    safe_update() {
+        update_status=0
+        trap 'if [[ $update_status -eq 0 ]]; then restore_backups; fi' EXIT
+
+        license_download_and_extract
+        
+        prepare_ioncube
+        false
+        config_opcache
+        # Install and set perms
+        app_setup_dir
+        app_update_steps
         apply_permissions
         setup_cron
         setup_systemd_queue
@@ -2224,29 +2241,38 @@ elif [[ "$CHOICE" == "update" ]]; then
         fi
         
         app_maintenance_off
-        
+        update_status=1
+
+        trap - EXIT
+
         section "All done!"
-        echo "Domain:       ${DOMAIN}"
-        echo "App Path:     ${APP_DIR}"
-        echo "DocumentRoot: ${APP_DIR}/public"
-        echo "Web server:   ${WEB}"
-        echo "DB engine:    ${DB_ENGINE}"
-        php -v | grep -qi ioncube && echo "ionCube:      enabled" || echo "ionCube:      not detected"
-        echo "DB:           ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-        echo "Log:          ${LOG}"
+        echo
+        hr 
+        echo "Summary:"
         hr
-        echo "Useful:"
-        echo " systemctl status dezerx.service"
-        echo " crontab -l"
-        [[ "$WEB" == "nginx" ]] && echo " nginx logs: /var/log/nginx/" || echo " apache logs: /var/log/apache2/ or /var/log/httpd/"
-        echo " SSL (if enabled): /etc/letsencrypt/live/${DOMAIN}/"
+        echo "- Domain:       ${DOMAIN:-}"
+        echo "- App Path:     ${APP_DIR:-}"
+        echo "- Web server:   ${WEB:-}"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
+        php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
+        echo "- DB:"
+        echo "-  Engine:      ${DB_ENGINE:-}"
+        echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
+        echo "- Logs:"
+        echo "-  Script:      ${LOG:-}"
+        echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
+        [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
         hr
-    else
-        restore_backups
-    fi
-    
+        echo "Useful Commands:"
+        hr
+        echo "- Check Services: systemctl status dezerx.service"
+        echo "- Check Cron:     crontab -l"
+        echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
+        hr
+        echo
+    }
+    safe_update
     exit 0
-    
 elif [[ "$CHOICE" == "uninstall" ]]; then
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
     if [[ -d "$APP_DIR" ]]; then
@@ -2257,6 +2283,37 @@ elif [[ "$CHOICE" == "uninstall" ]]; then
     else
         die "Application directory ${APP_DIR} does not exist."
     fi
+elif [[ "$CHOICE" == "test" ]]; then
+    echo "test :3"
+
+    db_collect
+
+    echo
+    hr 
+    echo "Summary:"
+    hr
+    echo "- Domain:       ${DOMAIN:-}"
+    echo "- App Path:     ${APP_DIR:-}"
+    echo "- Web server:   ${WEB:-}"
+    [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
+    php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
+    echo "- DB:"
+    echo "-  Engine:      ${DB_ENGINE:-}"
+    echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
+    echo "- Logs:"
+    echo "-  Script:      ${LOG:-}"
+    echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
+    [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
+    hr
+    echo "Useful Commands:"
+    hr
+    echo "- Check Services: systemctl status dezerx.service"
+    echo "- Check Cron:     crontab -l"
+    echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
+    hr
+    echo
+
+    exit 0
 else
     echo "No valid choice made, exiting."
 fi
