@@ -2237,6 +2237,7 @@ elif [[ "$CHOICE" == "update" ]]; then
 
         license_download_and_extract
         
+        install_php_stack
         prepare_ioncube
         config_opcache
         # Install and set perms
