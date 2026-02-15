@@ -280,8 +280,16 @@ load_env_into_array() {
     [[ -f "$file" ]] || return 0
     while IFS='=' read -r key value; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-        key=$(echo -e "$key" | xargs)
-        value=$(echo -e "$value" | xargs)
+        key=$(echo "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        value=$(echo "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+        if [[ "${value}" =~ ^\"(.*)\"$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        elif [[ "${value}" =~ ^\'(.*)\'$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        fi
+
+        value=$(echo "${value}" | sed -e 's/\\\\/\\/g' -e 's/\\"/"/g')
         arr_ref["$key"]="$value"
     done < "$file"
 }
@@ -450,13 +458,14 @@ mysql_exec(){
 }
 
 db_create(){
+    local SQL_PASS="${DB_PASS//\\/\\\\}"
+    SQL_PASS="${SQL_PASS//\'/\\\'}"
     local SQL="
     CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;
-    CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${DB_PASS}';
+    CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${SQL_PASS}';
     GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${DB_HOST}' WITH GRANT OPTION;
     FLUSH PRIVILEGES;"
     section "Create database & user"
-    echo "$SQL"
     mysql_exec "$SQL" || die "Failed to create database/user. Check root access."
 }
 
@@ -701,6 +710,7 @@ ask_license_key(){
 license_verify(){
     local API="https://market.dezerx.com/api/license/verify"
     local TMP; TMP="$(mktemp)"
+    trap 'rm -rf "${TMP:-}"' RETURN
     local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     section "Verify license (GET)"
     cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
@@ -891,7 +901,7 @@ prepare_ioncube(){
     URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
     TMP="$(mktemp -d)"
     TAR="$TMP/ioncube.tar.gz"
-    trap 'rm -rf "$TMP"' RETURN
+    trap 'rm -rf "${TMP:-}"' RETURN
 
     run "Download IonCube" curl -fsSL "$URL" -o "$TAR"
     if [[ -f "$TAR" ]]; then
@@ -1220,20 +1230,15 @@ EOF"
 
 env_write_value(){
     local key="$1" value="$2"
-    local env_file="${3:-${APP_DIR}/.env}"
-    local needs_quote=false
-    local formated
+    local env_file="${3:-${APP_DIR:-/var/www/spartan}/.env}"
+    local formatted
 
-    if [[ "$value" =~ ^\".*\"$ ]]; then
-        formated="${key}=${value}"
+    if [[ "$value" =~ [^a-zA-Z0-9_./-] ]]; then
+        local escaped_value
+        escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+        formatted="${key}=\"${escaped_value}\""
     else
-        if [[ "$value" =~ [[:space:]#\$\"\'\`\=] ]]; then
-            local escaped_value
-            escaped_value=$(printf '%s' "$value" | sed -e 's/\\/\\\\/g'  -e 's/"/\\"/g')
-            formated="${key}=\"${escaped_value}\""
-        else
-            formated="${key}=${value}"
-        fi
+        formatted="${key}=${value}"
     fi
 
     [[ ! -f "$env_file" ]] && touch "$env_file"
@@ -1242,10 +1247,13 @@ env_write_value(){
 
     if grep -qE "^${key}=" "$env_file"; then
         echo -e "Updating ${key}"
-        sed -i -E "s|^${key}=.*|${formated}|g" "$env_file"
+        local sed_formatted="${formatted//\\/\\\\}"
+        sed_formatted="${sed_formatted//&/\\&}"
+        sed_formatted="${sed_formatted//|/\\|}"
+        sed -i -E "s|^${key}=.*|${sed_formatted}|g" "$env_file"
     else
-        printf '%s\n' "$formated" >> "$env_file"
         echo -e "Adding ${key}"
+        printf '%s\n' "$formatted" >> "$env_file"
     fi
 }
 
@@ -1628,7 +1636,16 @@ app_get_var() {
 
     get_env_value(){
         local key=$1 
-        grep -E "^${key}=" "$envfile" | cut -d'=' -f2-
+        val=$(grep -E "^${key}=" "$envfile" | head -n 1 | cut -d'=' -f2-)
+        val="$(echo "${val}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+        if [[ "${val}" =~ ^\"(.*)\"$ ]]; then
+            val="${BASH_REMATCH[1]}"
+        elif [[ "${val}" =~ ^\'(.*)\'$ ]]; then
+            val="${BASH_REMATCH[1]}"
+        fi
+        val=$(echo "${val}" | sed -e 's/\\\\/\\/g' -e 's/\\"/"/g')
+        echo "${val}"
     }
 
     if [[ -f "$envfile" ]]; then
@@ -1684,7 +1701,7 @@ merge_env() {
 
     while IFS='=' read -r key _; do
         [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-            key=$(echo -e "$key" | xargs)
+        key=$(echo "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         if [[ -n "${OLD_ENV[$key]+_}" ]]; then
             MERGED_ENV["$key"]="${OLD_ENV[$key]}"
         else
@@ -2220,6 +2237,7 @@ elif [[ "$CHOICE" == "update" ]]; then
 
         license_download_and_extract
         
+        install_php_stack
         prepare_ioncube
         config_opcache
         # Install and set perms
