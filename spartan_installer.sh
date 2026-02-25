@@ -1808,6 +1808,11 @@ verify_license(){
             PRODUCT_NAME="Spartan Ultimate"
             LICENSE_KEY="${license}"
             ;;
+        SPARTANDEV_*)
+            PRODUCT_ID="6"
+            PRODUCT_NAME="Spartan Developer"
+            LICENSE_KEY="${license}"
+            ;;
         *)
             echo "Invalid license key. Please try again."
             exit 1
