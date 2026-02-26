@@ -696,6 +696,9 @@ ask_license_key(){
         elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
             PRODUCT_ID="6"
             PRODUCT_NAME="Spartan Ultimate"
+        elif [[ "$LICENSE_KEY" == SPARTANDEV_* ]]; then
+            PRODUCT_ID="6"
+            PRODUCT_NAME="Spartan Developer"
         else
             whiptail --title "$TITLE" --msgbox "Invalid license key. Please try again." 8 50
             continue
