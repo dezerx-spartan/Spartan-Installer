@@ -718,7 +718,7 @@ license_verify(){
     section "Verify license (GET)"
     cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
     local CODE
-    CODE=$(curl -sS -X GET "$API" \
+    CODE=$(curl -4 -sS -X GET "$API" \
         -H "Authorization: Bearer ${LICENSE_KEY}" \
         -H "X-Domain: ${DOMAIN}" \
         -H "X-Product-ID: ${PRODUCT_ID}" \
@@ -751,7 +751,7 @@ license_download_and_extract(){
     cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
     
     local CODE
-    CODE=$(curl -sS -X POST "$API" \
+    CODE=$(curl -4 -sS -X POST "$API" \
         -H "Authorization: Bearer ${LICENSE_KEY}" \
         -H "X-Domain: ${DOMAIN}" \
         -H "X-Product-ID: ${PRODUCT_ID}" \
@@ -778,7 +778,7 @@ license_download_and_extract(){
     local OUT="$TMPDIR/app"
     mkdir -p "$OUT"
     (
-        cd "$OUT" && curl -fL -OJ "$URL"
+        cd "$OUT" && curl -4 -fL -OJ "$URL"
     ) || { error "Failed to download application payload."; return 1; }
 
     local FILE="$(find "$OUT" -maxdepth 1 -type f -print -quit)" 
