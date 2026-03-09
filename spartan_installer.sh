@@ -23,6 +23,7 @@ ASSUME_YES=0
 SHOW_HELP=0
 NONINTERACTIVE=0
 USED_APP_DIR=0
+ENABLE_IPV6=0
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -696,6 +697,9 @@ ask_license_key(){
         elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
             PRODUCT_ID="6"
             PRODUCT_NAME="Spartan Ultimate"
+        elif [[ "$LICENSE_KEY" == SPARTANDEV_* ]]; then
+            PRODUCT_ID="6"
+            PRODUCT_NAME="Spartan Developer"
         else
             whiptail --title "$TITLE" --msgbox "Invalid license key. Please try again." 8 50
             continue
@@ -715,12 +719,21 @@ license_verify(){
     section "Verify license (GET)"
     cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
     local CODE
-    CODE=$(curl -sS -X GET "$API" \
-        -H "Authorization: Bearer ${LICENSE_KEY}" \
-        -H "X-Domain: ${DOMAIN}" \
-        -H "X-Product-ID: ${PRODUCT_ID}" \
-        -H "Content-Type: application/json" \
-    -o "$TMP" -w '%{http_code}') || CODE=0
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        CODE=$(curl -4 -sS -X GET "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$TMP" -w '%{http_code}') || CODE=0
+    else
+        CODE=$(curl -sS -X GET "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$TMP" -w '%{http_code}') || CODE=0
+    fi
     
     [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$TMP" 2>/dev/null || true; error "Verify API returned HTTP ${CODE}."; return 1; }
     
@@ -748,12 +761,21 @@ license_download_and_extract(){
     cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
     
     local CODE
-    CODE=$(curl -sS -X POST "$API" \
-        -H "Authorization: Bearer ${LICENSE_KEY}" \
-        -H "X-Domain: ${DOMAIN}" \
-        -H "X-Product-ID: ${PRODUCT_ID}" \
-        -H "Content-Type: application/json" \
-    -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        CODE=$(curl -4 -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    else
+        CODE=$(curl -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    fi
     
     [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; error "Download-token API returned HTTP ${CODE}."; return 1; }
     
@@ -947,11 +969,16 @@ nginx_layout_detect(){
     NGINX_ENABLED="/etc/nginx/sites-enabled"
     if [[ -d "$NGINX_AVAIL" && -d "$NGINX_ENABLED" ]]; then
         NGINX_MODE="debian"
-        NGINX_CONF_PATH="$NGINX_AVAIL/dezerx.conf"
+        NGINX_CONF_PATH="$NGINX_AVAIL/spartan.conf"
+        NGINX_CONF_OLD_PATH="$NGINX_AVAIL/dezerx.conf"
+        NGINX_CONF_OLD_SYMLINK="$NGINX_ENABLED/dezerx.conf"
     else
         NGINX_MODE="rhel"
-        NGINX_CONF_PATH="/etc/nginx/conf.d/dezerx.conf"
+        NGINX_CONF_PATH="/etc/nginx/conf.d/spartan.conf"
+        NGINX_CONF_OLD_PATH="/etc/nginx/conf.d/dezerx.conf"
+        NGINX_CONF_OLD_SYMLINK=""
     fi
+
     section "NGINX layout: ${NGINX_MODE} (conf: ${NGINX_CONF_PATH})"
 }
 
@@ -969,18 +996,22 @@ nginx_remove_defaults(){
 
 nginx_enable_site(){
     if [[ "$NGINX_MODE" == "debian" && -n "$NGINX_ENABLED" ]]; then
-        run "Enable site (symlink)" ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/dezerx.conf"
+        run "Enable site (symlink)" ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/spartan.conf"
     fi
 }
 
 configure_nginx_http_only(){
     local sock; sock="$(php_fpm_socket)"
-    nginx_layout_detect
     nginx_remove_defaults
+
+    local listen_80="listen 80;"
+    if [[ ${ENABLE_IPV6-} -ne 0 ]]; then
+        listen_80="listen 80;\n    listen [::]:80;"
+    fi
     
   run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
-    listen 80;
+    ${listen_80}
     server_name ${DOMAIN};
 
     root ${APP_DIR}/public;
@@ -1001,14 +1032,14 @@ server {
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
+        fastcgi_buffer_size 64k;
+        fastcgi_buffers 8 64k;
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
     }
 
-    location ~ /\.ht {
+    location ~ /\.(?!well-known).* {
         deny all;
     }
 }
@@ -1022,17 +1053,24 @@ EOF"
 
 configure_nginx_ssl(){
     local sock; sock="$(php_fpm_socket)"
-    nginx_layout_detect
     nginx_remove_defaults
+
+    local listen_80="listen 80;"
+    local listen_443="listen 443 ssl;"
+    if [[ ${ENABLE_IPV6-} -ne 0 ]]; then
+        listen_80="listen 80;\n    listen [::]:80;"
+        listen_443="listen 443 ssl;\n    listen [::]:443 ssl;"
+    fi
+
   run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
-    listen 80;
+    ${listen_80}
     server_name ${DOMAIN};
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    ${listen_443}
     http2 on;
     server_name ${DOMAIN};
 
@@ -1054,6 +1092,7 @@ server {
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
     ssl_prefer_server_ciphers on;
 
+    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\";
     add_header X-Content-Type-Options nosniff;
     add_header X-XSS-Protection \"1; mode=block\";
     add_header X-Robots-Tag none;
@@ -1073,15 +1112,15 @@ server {
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
+        fastcgi_buffer_size 64k;
+        fastcgi_buffers 8 64k;
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
         include /etc/nginx/fastcgi_params;
     }
 
-    location ~ /\.ht {
+    location ~ /\.(?!well-known).* {
         deny all;
     }
 }
@@ -1226,6 +1265,30 @@ opcache.fast_shutdown=1
 
 opcache.save_comments=1
 EOF"
+}
+
+config_network() {
+    section "Network Configuration"
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        echo "Configuring Network: Disabling IPv6"
+
+        if [[ ! -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            run "Writting sysctl config to disabled IPv6" bash -c "cat > '/etc/sysctl.d/99-spartan-disable-ipv6.conf' <<EOF
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF"
+            run "Applying sysctl changes (IPV6 config)" sysctl -p "/etc/sysctl.d/99-spartan-disable-ipv6.conf" || true
+        fi
+    else
+        echo "Skipping IPv6 Network Configuration"
+
+        if [[ -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            run "Removing sysctl IPv6 config" rm -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf"
+            run "Applying sysctl changes (IPV6 config deletition)" sysctl --system || true
+        fi
+
+    fi
 }
 
 env_write_value(){
@@ -1513,6 +1576,22 @@ create_php_backup() {
     fi
 }
 
+create_nginx_backup() {
+    local backup_path="${BACKUP_DIR}/spartan_conf_backup_$(date +%Y%m%d%H%M%S)"
+    NGINX_BACKUP_FILE="${backup_path}.conf"
+    
+    section "Creating a backup of spartan nginx config at ${NGINX_BACKUP_FILE}"
+    if [[ -f "$NGINX_CONF_OLD_PATH" ]]; then
+        cp "$NGINX_CONF_OLD_PATH" "$NGINX_BACKUP_FILE"
+        NGINX_RESTORE_PATH="$NGINX_CONF_OLD_PATH"
+        echo "Backup created at: ${NGINX_BACKUP_FILE}"
+    elif [[ -f "$NGINX_CONF_PATH" ]]; then
+        cp "$NGINX_CONF_PATH" "$NGINX_BACKUP_FILE"
+        NGINX_RESTORE_PATH="$NGINX_CONF_PATH"
+        echo "Backup created at: ${NGINX_BACKUP_FILE}"
+    fi
+}
+
 create_app_backup() {
     local app_basename backup_path
     backup_path="${BACKUP_DIR}/spartan_backup_$(date +%Y%m%d%H%M%S)"
@@ -1546,6 +1625,7 @@ create_db_backup() {
 
 create_backups(){
     mkdir -p "$BACKUP_DIR"
+    create_nginx_backup
     create_app_backup
     create_db_backup
     create_php_backup
@@ -1569,6 +1649,22 @@ restore_php_backup() {
         echo "PHP backup restored" | tee -a "$LOG"
     else
         echo "No PHP backup file to restore." | tee -a "$LOG"
+    fi
+}
+
+restore_nginx_backup() {
+    if [[ -n "${NGINX_BACKUP_FILE}" && -f "${NGINX_BACKUP_FILE}" && -n "${NGINX_CONF_PATH}" ]]; then
+        section "Restoring spartan nginx config from ${NGINX_BACKUP_FILE}"
+
+        cp "$NGINX_BACKUP_FILE" "$NGINX_RESTORE_PATH"
+
+        if [[ "${NGINX_MODE:-}" == "debian" ]]; then
+            local filename; filename=$(basename "$NGINX_RESTORE_PATH")
+            ln -sf "$NGINX_RESTORE_PATH" "/etc/nginx/sites-enabled/${filename}"
+        fi
+        echo "Nginx backup restored."
+    else
+        echo "No nginx backup to restore."
     fi
 }
 
@@ -1604,9 +1700,11 @@ restore_backups() {
     restore_db_backup
     restore_php_backup
     restore_ioncube_backup
+    restore_nginx_backup
     app_restore_steps
     apply_permissions
     app_maintenance_off
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
     die "Backups restored!"
 }
 
@@ -1808,6 +1906,11 @@ verify_license(){
             PRODUCT_NAME="Spartan Ultimate"
             LICENSE_KEY="${license}"
             ;;
+        SPARTANDEV_*)
+            PRODUCT_ID="6"
+            PRODUCT_NAME="Spartan Developer"
+            LICENSE_KEY="${license}"
+            ;;
         *)
             echo "Invalid license key. Please try again."
             exit 1
@@ -1837,6 +1940,15 @@ verify_ssl(){
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --non-interactive)
+                NONINTERACTIVE=1
+                ASSUME_YES=1
+                shift
+                ;;
+            -h|--help)
+                SHOW_HELP=1
+                shift
+                ;;
             --install)
                 ACTION="install"
                 shift
@@ -1977,14 +2089,46 @@ parse_args() {
                     exit 1
                 fi
                 ;;
-            --non-interactive)
-                NONINTERACTIVE=1
-                ASSUME_YES=1
-                shift
+            --ipv6=*)
+                local ipv6
+                ipv6="${1#--ipv6=}"
+                if [[ -n "${ipv6-}" ]]; then
+                    case "${ipv6-}" in
+                        true|enable)
+                            ENABLE_IPV6=1
+                            ;;
+                        false|disable)
+                            ENABLE_IPV6=0
+                            ;;
+                    esac
+                    shift
+                else
+                    echo "Missing argument for --ipv6=" >&2
+                    exit 1
+                fi
                 ;;
-            -h|--help)
-                SHOW_HELP=1
-                shift
+            --ipv6)
+                local ipv6
+                ipv6="${2}"
+                if [[ -n "${ipv6-}" ]]; then
+                    case "${ipv6-}" in
+                        true|enable)
+                            ENABLE_IPV6=1
+                            shift 2
+                            ;;
+                        false|disable)
+                            ENABLE_IPV6=0
+                            shift 2
+                            ;;
+                        *)
+                            ENABLE_IPV6=1
+                            shift 1
+                            ;;
+                    esac
+                else
+                    echo "Missing argument for --ipv6=" >&2
+                    exit 1
+                fi
                 ;;
             *)
                 echo "Unknown option: $1" >&2
@@ -2040,6 +2184,8 @@ Options:
     --delete, --uninstall       Delete the application directory (no DB removal)
     --non-interactive           hides all confirmation and configuration dialogs
                                 (used for 1 line installs/updates)
+
+    --ipv6                      Enables ipv6 support for requests.
 
     --app-dir=PATH              Sets the application directory (DocumentRoot = PATH/public)
                                 You can also use the spaced form:  --app-dir PATH
@@ -2110,7 +2256,7 @@ if [[ "$CHOICE" == "install" ]]; then
     license_verify
     license_download_and_extract
     
-    # Now install system stack & app deps
+    # Install system stack & app deps
     install_php_stack
     install_webserver
     no_apache
@@ -2124,12 +2270,14 @@ if [[ "$CHOICE" == "install" ]]; then
     detect_web_user_group
     config_php_fpm
     config_opcache
+    config_network
     app_env_setup
     app_install_steps
     apply_permissions
     setup_cron
     setup_systemd_queue
     
+    nginx_layout_detect
     configure_nginx_http_only
     if [[ -n "${certbot_choice-}" ]]; then
         echo "Skipping certbot/ssl prompt, using provided ssl mode."
@@ -2184,6 +2332,7 @@ if [[ "$CHOICE" == "install" ]]; then
     fi
     
     app_maintenance_off
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
 
     section "All done!"
     echo
@@ -2218,6 +2367,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     app_get_dir
     app_get_var
     detect_web_user_group
+    nginx_layout_detect
 
     # Backup app
     if ! create_backups; then
@@ -2240,6 +2390,8 @@ elif [[ "$CHOICE" == "update" ]]; then
         install_php_stack
         prepare_ioncube
         config_opcache
+        config_network
+
         # Install and set perms
         app_setup_dir
         app_update_steps
@@ -2249,6 +2401,60 @@ elif [[ "$CHOICE" == "update" ]]; then
         
         # Restart services
         if [[ "$WEB" == "nginx" ]]; then
+            section "Updating NGINX configuration"
+            if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
+                echo "Detected HTTPS in .env"
+                CERT_DIR=""
+                local existing_cert_path
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
+
+                    if [[ -n "${existing_cert_path-}" ]]; then
+                        CERT_DIR=$(dirname "${existing_cert_path-}")
+                        echo "Extracted certificate directory from the old NGINX configuration"
+                    fi
+                elif [[ -f "${NGINX_CONF_PATH}" ]]; then
+                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
+
+                    if [[ -n "${existing_cert_path-}" ]]; then
+                        CERT_DIR=$(dirname "${existing_cert_path-}")
+                        echo "Extracted certificate directory from the old NGINX configuration"
+                    fi
+                fi
+
+                if [[ -z ${CERT_DIR-} ]]; then
+                    if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
+                        CERT_DIR="/etc/certs/spartan/${DOMAIN}"
+                    elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+                        CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+                    else
+                        CERT_DIR=""
+                    fi
+                fi
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                fi
+
+                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                fi
+
+                configure_nginx_ssl
+            else
+                echo "Detected HTTP in .env"
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                fi
+
+                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                fi
+
+                configure_nginx_http_only
+            fi
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
         elif [[ "$WEB" == "apache" ]]; then
@@ -2258,6 +2464,7 @@ elif [[ "$CHOICE" == "update" ]]; then
         fi
         
         app_maintenance_off
+        run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
         update_status=1
 
         trap - EXIT
