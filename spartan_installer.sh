@@ -1894,7 +1894,7 @@ Summary(){
     summary+="-  Name:        ${PRODUCT_NAME:-}\n"
     summary+="-  ID:          ${PRODUCT_ID:-}\n"
     summary+="> Domain:       ${DOMAIN:-}\n"
-    [[ "${CHOICE:-}" != "get_link" ]] &&  summary+="> App Path:      ${APP_DIR}\n"
+    [[ "${CHOICE:-}" != "get_link" ]] &&  summary+="> App Path:     ${APP_DIR}\n"
     [[ -n "${WEB:-}" ]] && summary+="> Web server:   ${WEB:-}\n"
     if [[ -n "${DB_ENGINE:-}" ]]; then
         summary+="> DB:\n"
