@@ -8,10 +8,10 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 ## Chapters
 
-- [Features](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#Features)
-- [Requirements](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#Requirements)
-- [How to install](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#How-To-install)
-- [Troubleshooting](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#Troubleshooting)
+- [Features](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#features)
+- [Requirements](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#requirements)
+- [How to install](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#how-to-install)
+- [Troubleshooting](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#troubleshooting)
 
 ## Features
 
