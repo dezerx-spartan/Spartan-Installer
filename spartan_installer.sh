@@ -1884,7 +1884,7 @@ Summary(){
     summary+="$(hr)\n"
 
     if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
-        whiptail --title "$TITLE" --yesno "$summary" 22 74 || exit 1
+        whiptail --title "$TITLE" --yesno "$summary" 22 73 || exit 1
     else
         echo -e "$summary"
     fi
