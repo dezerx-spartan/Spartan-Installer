@@ -1773,6 +1773,25 @@ app_find_web(){
 app_get_var() {
     local envfile="${APP_DIR}/.env"
 
+    get_product_name(){
+        local NAME="" ID=$1
+        case $ID in
+            1)
+                NAME="Spartan Starter"
+                ;;
+            5)
+                NAME="Spartan Professional"
+                ;;
+            6)
+                NAME="Spartan Ultimate/Dev"
+                ;;
+            *)
+                NAME="PlaceHolder"
+                ;;
+        esac
+        echo "${NAME:-}"
+    }
+
     get_env_value(){
         local key=$1 
         val=$(grep -E "^${key}=" "$envfile" | head -n 1 | cut -d'=' -f2-)
@@ -1793,6 +1812,7 @@ app_get_var() {
         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
         APP_KEY=$(get_env_value "APP_KEY")
         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
+        PRODUCT_NAME=$(get_product_name "${PRODUCT_ID:-}")
         DB_CONNECTION=$(get_env_value "DB_CONNECTION")
         DB_HOST=$(get_env_value "DB_HOST")
         DB_PORT=$(get_env_value "DB_PORT")
