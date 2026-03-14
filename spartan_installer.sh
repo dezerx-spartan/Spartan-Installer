@@ -1868,7 +1868,7 @@ app_setup_dir(){
 
 Summary(){
     local summary
-    summary+="${CHOICE^} Summary:\n"
+    summary+="\n${CHOICE^} Summary:\n\n"
     summary+="$(hr)\n"
     summary+="> Product:\n"
     summary+="-  Name:        ${PRODUCT_NAME:-}\n"
@@ -1881,7 +1881,7 @@ Summary(){
         summary+="-  Engine:      ${DB_ENGINE:-}\n"
         summary+="-  Connection:  ${DB_USER:-(not set)}@${DB_HOST:-(not set)}:${DB_PORT:-(not set)}/${DB_NAME:-(not set)}\n"
     fi
-    summary+="$(hr)\n"
+    summary+="$(hr)\n\n"
 
     if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
         whiptail --title "$TITLE" --yesno "$summary" 22 73 || exit 1
