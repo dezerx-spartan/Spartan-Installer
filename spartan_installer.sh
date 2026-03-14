@@ -794,12 +794,12 @@ request_downlaod_link(){
 
     section "License OK"
     echo "Download URL (one-time): $URL"
-    [[ -n "$name" ]] && echo "Product: $name"
+    [[ -n "$NAME" ]] && echo "Product: $NAME"
     [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
     [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
 
     if [[ "$NONINTERACTIVE" == 0 ]]; then
-        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${url}\n\nExpires at:\n${expires:-Unknown}" 12 70
+        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires at:${expires:-Unknown}" 12 78
     fi
 }
 
@@ -1867,38 +1867,26 @@ app_setup_dir(){
 }
 
 Summary(){
+    local summary
+    summary+="${CHOICE^} Summary:\n"
+    summary+="$(hr)\n"
+    summary+="> Product:\n"
+    summary+="-  Name:        ${PRODUCT_NAME:-}\n"
+    summary+="-  ID:          ${PRODUCT_ID:-}\n"
+    summary+="> Domain:       ${DOMAIN:-}\n"
+    [[ "${CHOICE:-}" != "get_link" ]] &&  summary+="> App Path:      ${APP_DIR}\n"
+    [[ -n "${WEB:-}" ]] && summary+="> Web server:   ${WEB:-}\n"
+    if [[ -n "${DB_ENGINE:-}" ]]; then
+        summary+="> DB:\n"
+        summary+="-  Engine:      ${DB_ENGINE:-}\n"
+        summary+="-  Connection:  ${DB_USER:-(not set)}@${DB_HOST:-(not set)}:${DB_PORT:-(not set)}/${DB_NAME:-(not set)}\n"
+    fi
+    summary+="$(hr)\n"
+
     if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
-        whiptail --title "$TITLE" --yesno "Summary:\n
-Domain: ${DOMAIN}
-App dir: ${APP_DIR}
-Web server: ${WEB}
-Database engine: ${DB_ENGINE}
-
-DB Host: ${DB_HOST}
-DB Port: ${DB_PORT}
-DB Name: ${DB_NAME}
-DB User: ${DB_USER}
-
-Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
-
-Proceed with installation (live output)?" 22 72 || exit 1
+        whiptail --title "$TITLE" --yesno "$summary" 22 72 || exit 1
     else
-        local summary
-        summary+="${CHOICE^} Summary:\n"
-        summary+="$(hr)\n"
-        summary+="- Product:\n"
-        summary+="-  Name:        ${PRODUCT_NAME}\n"
-        summary+="-  ID:          ${PRODUCT_ID}\n"
-        summary+="- Domain:       ${DOMAIN}\n"
-        [[ "${CHOICE:-}" != "get_link" ]] &&  summary+="- App Dir:      ${APP_DIR}\n"
-        [[ -n "${WEB:-}" ]] && summary+="- Web server:   ${WEB:-}\n"
-        if [[ -n "${DB_ENGINE:-}" ]]; then
-            summary+="- DB:\n"
-            summary+="-  Engine:      ${DB_ENGINE:-}\n"
-            summary+="-  Connection:  ${DB_USER:-(not set)}@${DB_HOST:-(not set)}:${DB_PORT:-(not set)}/${DB_NAME:-(not set)}\n"
-        fi
-        summary+="$(hr)\n"
-        echo -e "$final_summary"
+        echo -e "$summary"
     fi
 }
 
@@ -2566,13 +2554,9 @@ elif [[ "$CHOICE" == "update" ]]; then
     safe_update
     exit 0
 elif [[ "$CHOICE" == "get_link" || "$ACTION" == "get link" ]]; then
-    app_get_dir
-    app_get_var
-    detect_web_user_group
-
-    if [[ -z "$WEB" ]]; then
-        WEB=""
-    fi
+    # app_get_dir
+    # app_get_var
+    # detect_web_user_group
 
     ask_domain
     ask_license_key
