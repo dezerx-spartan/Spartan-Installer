@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# DezerX Spartan – Interactive Installer (Live Output, SSL-ready NGINX, no Redis)
+# DezerX Spartan – Interactive Installer
 # Distros: Ubuntu/Debian, CentOS/RHEL/Alma/Rocky, Fedora
-# Made by HDBento & Anthony S
+# Made by HdBento & Anthony S
 
 set -euo pipefail
 trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
@@ -23,6 +23,7 @@ ASSUME_YES=0
 SHOW_HELP=0
 NONINTERACTIVE=0
 USED_APP_DIR=0
+ENABLE_IPV6=0
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -211,6 +212,8 @@ app_prepare_dir(){
         rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
+            "${APP_DIR}/Modules" \
+            "${APP_DIR}/resources/views/emails" \
             "${APP_DIR}/modules_statuses.json" \
             "${APP_DIR}/.env" \
             "${update_tmpdir}/" 2>/dev/null || true
@@ -241,8 +244,10 @@ app_prepare_dir(){
 }
 
 app_restore_files(){
+    mkdir -p "${APP_DIR}/resources/views/emails"
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
+    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
     if [[ "$css_save_methode" == "fallback" ]]; then
         run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
@@ -345,24 +350,25 @@ no_apache(){
 
 # ---------------- Menüs ----------------
 main_menu(){
-    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 70 3 \
+    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 72 5 \
         "install" "Install DezerX Spartan" \
         "update" "Update DezerX Spartan" \
+        "get link" "Get download link of DezerX Spartan" \
         "uninstall" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
 }
 
 ask_domain(){
-    if [[ -z "$DOMAIN" ]]; then
+    if [[ -z "${DOMAIN:-}" ]]; then
         while :; do
             DOMAIN=$(whiptail --title "$TITLE" --inputbox "Enter your primary domain (e.g. example.com)\nThis will be used for vHost, APP_URL and SSL." 10 70 "" 3>&1 1>&2 2>&3) || exit 1
             [[ -n "$DOMAIN" ]] && break
             whiptail --title "$TITLE" --msgbox "Domain is required." 8 50
+            section "Domain set to: ${DOMAIN}"
         done
     else
         echo "Skipping domain prompt, using provided domain."
     fi
     CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
-    section "Domain set to: ${DOMAIN}"
 }
 
 ask_app_dir(){
@@ -680,34 +686,36 @@ PRODUCT_ID=""
 PRODUCT_NAME=""
 
 ask_license_key(){
-    while :; do
-        LICENSE_KEY=$(whiptail --title "$TITLE" --passwordbox "Enter your DezerX Spartan license key" 10 70 3>&1 1>&2 2>&3) || exit 1
-        if [[ -z "$LICENSE_KEY" ]]; then
-            whiptail --title "$TITLE" --msgbox "License key is required." 8 50
-            continue
-        fi
+    if [[ -z ${LICENSE_KEY:-} ]]; then
+        while :; do
+            LICENSE_KEY=$(whiptail --title "$TITLE" --passwordbox "Enter your DezerX Spartan license key" 10 70 3>&1 1>&2 2>&3) || exit 1
+            if [[ -z "$LICENSE_KEY" ]]; then
+                whiptail --title "$TITLE" --msgbox "License key is required." 8 50
+                continue
+            fi
 
-        if [[ "$LICENSE_KEY" == SPARTANSTARTER_* ]]; then
-            PRODUCT_ID="1"
-            PRODUCT_NAME="Spartan Starter"
-        elif [[ "$LICENSE_KEY" == SPARTANPROFESSIONAL_* ]]; then
-            PRODUCT_ID="5"
-            PRODUCT_NAME="Spartan Professional"
-        elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
-            PRODUCT_ID="6"
-            PRODUCT_NAME="Spartan Ultimate"
-        elif [[ "$LICENSE_KEY" == SPARTANDEV_* ]]; then
-            PRODUCT_ID="6"
-            PRODUCT_NAME="Spartan Developer"
-        else
-            whiptail --title "$TITLE" --msgbox "Invalid license key. Please try again." 8 50
-            continue
-        fi
-        
-        local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
-        whiptail --title "$TITLE" --yesno "Use this license key?\n\n${masked}\n\nDomain: ${DOMAIN}" 12 70 && break
-    done
-    section "License key captured (masked)."
+            if [[ "$LICENSE_KEY" == SPARTANSTARTER_* ]]; then
+                PRODUCT_ID="1"
+                PRODUCT_NAME="Spartan Starter"
+            elif [[ "$LICENSE_KEY" == SPARTANPROFESSIONAL_* ]]; then
+                PRODUCT_ID="5"
+                PRODUCT_NAME="Spartan Professional"
+            elif [[ "$LICENSE_KEY" == SPARTANULTIMATE_* ]]; then
+                PRODUCT_ID="6"
+                PRODUCT_NAME="Spartan Ultimate"
+            elif [[ "$LICENSE_KEY" == SPARTANDEV_* ]]; then
+                PRODUCT_ID="6"
+                PRODUCT_NAME="Spartan Developer"
+            else
+                whiptail --title "$TITLE" --msgbox "Invalid license key. Please try again." 8 50
+                continue
+            fi
+            
+            local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
+            whiptail --title "$TITLE" --yesno "Use this license key?\n\n${masked}\n\nDomain: ${DOMAIN}" 12 70 && break
+        done
+        section "License key captured (masked)."
+    fi
 }
 
 license_verify(){
@@ -718,12 +726,21 @@ license_verify(){
     section "Verify license (GET)"
     cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
     local CODE
-    CODE=$(curl -sS -X GET "$API" \
-        -H "Authorization: Bearer ${LICENSE_KEY}" \
-        -H "X-Domain: ${DOMAIN}" \
-        -H "X-Product-ID: ${PRODUCT_ID}" \
-        -H "Content-Type: application/json" \
-    -o "$TMP" -w '%{http_code}') || CODE=0
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        CODE=$(curl -4 -sS -X GET "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$TMP" -w '%{http_code}') || CODE=0
+    else
+        CODE=$(curl -sS -X GET "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$TMP" -w '%{http_code}') || CODE=0
+    fi
     
     [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$TMP" 2>/dev/null || true; error "Verify API returned HTTP ${CODE}."; return 1; }
     
@@ -741,6 +758,55 @@ license_verify(){
     [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN" || true
 }
 
+request_downlaod_link(){
+    local API="https://market.dezerx.com/api/license/download"
+    local TMPDIR; TMPDIR="$(mktemp -d)"
+    local RESP_FILE="$TMPDIR/resp.json"
+    local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
+
+    section "Request one-time download link (POST)"
+    cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
+
+    local CODE
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        CODE=$(curl -4 -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    else
+        CODE=$(curl -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    fi
+
+    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; error "Download-token API returned HTTP ${CODE}."; return 1; }
+
+    local SUCCESS URL EXPIRES NAME SIZE MSG
+    SUCCESS=$(jq -r '.success // false' "$RESP_FILE") || SUCCESS=false
+    MSG=$(jq -r '.message // empty' "$RESP_FILE")
+    URL=$(jq -r '.data.download_url // empty' "$RESP_FILE")
+    EXPIRES=$(jq -r '.data.expires_at // empty' "$RESP_FILE")
+    NAME=$(jq -r '.data.product_name // empty' "$RESP_FILE")
+    SIZE=$(jq -r '.data.file_size // empty' "$RESP_FILE")
+
+    [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
+
+    section "License OK"
+    echo "\nDownload URL (one-time): $URL"
+    [[ -n "$NAME" ]] && echo "Product: $NAME"
+    [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
+    [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
+
+    if [[ "$NONINTERACTIVE" == 0 ]]; then
+        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires at:${expires:-Unknown}" 12 78
+    fi
+}
+
 license_download_and_extract(){
     local API="https://market.dezerx.com/api/license/download"
     local TMPDIR; TMPDIR="$(mktemp -d)"
@@ -751,12 +817,21 @@ license_download_and_extract(){
     cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
     
     local CODE
-    CODE=$(curl -sS -X POST "$API" \
-        -H "Authorization: Bearer ${LICENSE_KEY}" \
-        -H "X-Domain: ${DOMAIN}" \
-        -H "X-Product-ID: ${PRODUCT_ID}" \
-        -H "Content-Type: application/json" \
-    -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        CODE=$(curl -4 -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    else
+        CODE=$(curl -sS -X POST "$API" \
+            -H "Authorization: Bearer ${LICENSE_KEY}" \
+            -H "X-Domain: ${DOMAIN}" \
+            -H "X-Product-ID: ${PRODUCT_ID}" \
+            -H "Content-Type: application/json" \
+        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
+    fi
     
     [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; error "Download-token API returned HTTP ${CODE}."; return 1; }
     
@@ -770,8 +845,9 @@ license_download_and_extract(){
     
     [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
     
-    section "License OK – downloading ${NAME:-payload}"
-    echo "Download URL (one-time): $URL"
+    section "License OK"
+    echo "\nDownload URL (one-time): $URL"
+    [[ -n "$NAME" ]] && echo "Product: $NAME"
     [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
     [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
     
@@ -784,9 +860,9 @@ license_download_and_extract(){
     local FILE="$(find "$OUT" -maxdepth 1 -type f -print -quit)" 
     local EXT="$(file -b "$FILE")"
     local TYPE
-    if file -b "${FILE}" | grep -qi "zip"; then
+    if ${EXT} | grep -qi "zip"; then
         TYPE="zip"
-    elif file -b "${FILE}" | grep -Eiq "gzip|tar"; then
+    elif ${EXT} | grep -Eiq "gzip|tar"; then
         TYPE="targz"
     else
         case "$FILE" in
@@ -950,11 +1026,16 @@ nginx_layout_detect(){
     NGINX_ENABLED="/etc/nginx/sites-enabled"
     if [[ -d "$NGINX_AVAIL" && -d "$NGINX_ENABLED" ]]; then
         NGINX_MODE="debian"
-        NGINX_CONF_PATH="$NGINX_AVAIL/dezerx.conf"
+        NGINX_CONF_PATH="$NGINX_AVAIL/spartan.conf"
+        NGINX_CONF_OLD_PATH="$NGINX_AVAIL/dezerx.conf"
+        NGINX_CONF_OLD_SYMLINK="$NGINX_ENABLED/dezerx.conf"
     else
         NGINX_MODE="rhel"
-        NGINX_CONF_PATH="/etc/nginx/conf.d/dezerx.conf"
+        NGINX_CONF_PATH="/etc/nginx/conf.d/spartan.conf"
+        NGINX_CONF_OLD_PATH="/etc/nginx/conf.d/dezerx.conf"
+        NGINX_CONF_OLD_SYMLINK=""
     fi
+
     section "NGINX layout: ${NGINX_MODE} (conf: ${NGINX_CONF_PATH})"
 }
 
@@ -972,18 +1053,22 @@ nginx_remove_defaults(){
 
 nginx_enable_site(){
     if [[ "$NGINX_MODE" == "debian" && -n "$NGINX_ENABLED" ]]; then
-        run "Enable site (symlink)" ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/dezerx.conf"
+        run "Enable site (symlink)" ln -sf "$NGINX_CONF_PATH" "$NGINX_ENABLED/spartan.conf"
     fi
 }
 
 configure_nginx_http_only(){
     local sock; sock="$(php_fpm_socket)"
-    nginx_layout_detect
     nginx_remove_defaults
+
+    local listen_80="listen 80;"
+    if [[ ${ENABLE_IPV6-} -ne 0 ]]; then
+        listen_80="listen 80;\n    listen [::]:80;"
+    fi
     
   run "Write NGINX HTTP-only vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
-    listen 80;
+    ${listen_80}
     server_name ${DOMAIN};
 
     root ${APP_DIR}/public;
@@ -1004,14 +1089,14 @@ server {
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
+        fastcgi_buffer_size 64k;
+        fastcgi_buffers 8 64k;
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
     }
 
-    location ~ /\.ht {
+    location ~ /\.(?!well-known).* {
         deny all;
     }
 }
@@ -1025,17 +1110,24 @@ EOF"
 
 configure_nginx_ssl(){
     local sock; sock="$(php_fpm_socket)"
-    nginx_layout_detect
     nginx_remove_defaults
+
+    local listen_80="listen 80;"
+    local listen_443="listen 443 ssl;"
+    if [[ ${ENABLE_IPV6-} -ne 0 ]]; then
+        listen_80="listen 80;\n    listen [::]:80;"
+        listen_443="listen 443 ssl;\n    listen [::]:443 ssl;"
+    fi
+
   run "Write NGINX SSL vHost for ${DOMAIN}" bash -lc "cat >'$NGINX_CONF_PATH' <<'EOF'
 server {
-    listen 80;
+    ${listen_80}
     server_name ${DOMAIN};
     return 301 https://\$server_name\$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    ${listen_443}
     http2 on;
     server_name ${DOMAIN};
 
@@ -1057,6 +1149,7 @@ server {
     ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
     ssl_prefer_server_ciphers on;
 
+    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\";
     add_header X-Content-Type-Options nosniff;
     add_header X-XSS-Protection \"1; mode=block\";
     add_header X-Robots-Tag none;
@@ -1076,15 +1169,15 @@ server {
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
+        fastcgi_buffer_size 64k;
+        fastcgi_buffers 8 64k;
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
         include /etc/nginx/fastcgi_params;
     }
 
-    location ~ /\.ht {
+    location ~ /\.(?!well-known).* {
         deny all;
     }
 }
@@ -1099,7 +1192,6 @@ EOF"
 detect_web_user_group(){
     local user="" group="" proc_user pid candidates conf_file detection_method=""
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
-    
 
     if [[ "$WEB" == "nginx" ]]; then
         conf_file=(/etc/nginx/nginx.conf)
@@ -1191,7 +1283,6 @@ detect_web_user_group(){
 
 config_php_fpm(){
     local cfg; cfg="$(php_fpm_find_conf)"
-    local sock; sock="$(php_fpm_socket)"
     run "Updating user to ${APP_USER} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*user.*|user = ${APP_USER}|" "${cfg}"
     run "Updating group to ${APP_GROUP} in: ${cfg}" sed -Ei "s|^[[:space:]]*;?[[:space:]]*group.*|group = ${APP_GROUP}|" "${cfg}"
 
@@ -1229,6 +1320,30 @@ opcache.fast_shutdown=1
 
 opcache.save_comments=1
 EOF"
+}
+
+config_network() {
+    section "Network Configuration"
+    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
+        echo "Configuring Network: Disabling IPv6"
+
+        if [[ ! -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            run "Writting sysctl config to disabled IPv6" bash -c "cat > '/etc/sysctl.d/99-spartan-disable-ipv6.conf' <<EOF
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF"
+            run "Applying sysctl changes (IPV6 config)" sysctl -p "/etc/sysctl.d/99-spartan-disable-ipv6.conf" || true
+        fi
+    else
+        echo "Skipping IPv6 Network Configuration"
+
+        if [[ -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            run "Removing sysctl IPv6 config" rm -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf"
+            run "Applying sysctl changes (IPV6 config deletition)" sysctl --system || true
+        fi
+
+    fi
 }
 
 env_write_value(){
@@ -1274,7 +1389,6 @@ app_env_setup(){
     elif [[ ! -f "${APP_DIR}/.env" ]]; then
         run "Create empty .env" touch "${APP_DIR}/.env"
     fi
-    
 
     env_write_value "APP_NAME" "DezerX Spartan"
     env_write_value "APP_ENV" "production"
@@ -1289,7 +1403,6 @@ app_env_setup(){
     env_write_value "DB_USERNAME" "${DB_USER}"
     env_write_value "DB_PASSWORD" "${DB_PASS}"
 }
-
 
 app_install_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
@@ -1516,8 +1629,24 @@ create_php_backup() {
     fi
 }
 
+create_nginx_backup() {
+    local backup_path="${BACKUP_DIR}/spartan_conf_backup_$(date +%Y%m%d%H%M%S)"
+    NGINX_BACKUP_FILE="${backup_path}.conf"
+    
+    section "Creating a backup of spartan nginx config at ${NGINX_BACKUP_FILE}"
+    if [[ -f "$NGINX_CONF_OLD_PATH" ]]; then
+        cp "$NGINX_CONF_OLD_PATH" "$NGINX_BACKUP_FILE"
+        NGINX_RESTORE_PATH="$NGINX_CONF_OLD_PATH"
+        echo "Backup created at: ${NGINX_BACKUP_FILE}"
+    elif [[ -f "$NGINX_CONF_PATH" ]]; then
+        cp "$NGINX_CONF_PATH" "$NGINX_BACKUP_FILE"
+        NGINX_RESTORE_PATH="$NGINX_CONF_PATH"
+        echo "Backup created at: ${NGINX_BACKUP_FILE}"
+    fi
+}
+
 create_app_backup() {
-    local app_basename backup_path
+    local backup_path
     backup_path="${BACKUP_DIR}/spartan_backup_$(date +%Y%m%d%H%M%S)"
     APP_BACKUP_FILE="${backup_path}.tar.gz"
     
@@ -1527,15 +1656,7 @@ create_app_backup() {
 }
 
 create_db_backup() {
-    if [[ "$DB_ENGINE" == "mysql" ]]; then
-        local backup_path="${BACKUP_DIR}/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
-        DB_BACKUP_FILE="${backup_path}.sql.gz"
-        
-        section "Creating database backup at ${DB_BACKUP_FILE}"
-        mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
-        echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
-        
-    elif [[ "$DB_ENGINE" == "mariadb" ]]; then
+    if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
         local backup_path="${BACKUP_DIR}/spartan_db_backup_$(date +%Y%m%d%H%M%S)"
         DB_BACKUP_FILE="${backup_path}.sql.gz"
         
@@ -1549,6 +1670,7 @@ create_db_backup() {
 
 create_backups(){
     mkdir -p "$BACKUP_DIR"
+    create_nginx_backup
     create_app_backup
     create_db_backup
     create_php_backup
@@ -1575,8 +1697,24 @@ restore_php_backup() {
     fi
 }
 
+restore_nginx_backup() {
+    if [[ -n "${NGINX_BACKUP_FILE}" && -f "${NGINX_BACKUP_FILE}" && -n "${NGINX_CONF_PATH}" ]]; then
+        section "Restoring spartan nginx config from ${NGINX_BACKUP_FILE}"
+
+        cp "$NGINX_BACKUP_FILE" "$NGINX_RESTORE_PATH"
+
+        if [[ "${NGINX_MODE:-}" == "debian" ]]; then
+            local filename; filename=$(basename "$NGINX_RESTORE_PATH")
+            ln -sf "$NGINX_RESTORE_PATH" "/etc/nginx/sites-enabled/${filename}"
+        fi
+        echo "Nginx backup restored."
+    else
+        echo "No nginx backup to restore."
+    fi
+}
+
 restore_app_backup() {
-    if [[ -n "${APP_BACKUP_FILE}" && -f "$APP_BACKUP_FILE" ]]; then
+    if [[ -n "${APP_BACKUP_FILE:-}" && -f "$APP_BACKUP_FILE" ]]; then
         section "Restoring backup from ${APP_BACKUP_FILE}"
         find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
         [[ -d "$APP_DIR" ]] || mkdir -p "$APP_DIR"
@@ -1607,9 +1745,11 @@ restore_backups() {
     restore_db_backup
     restore_php_backup
     restore_ioncube_backup
+    restore_nginx_backup
     app_restore_steps
     apply_permissions
     app_maintenance_off
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
     die "Backups restored!"
 }
 
@@ -1637,6 +1777,25 @@ app_find_web(){
 app_get_var() {
     local envfile="${APP_DIR}/.env"
 
+    get_product_name(){
+        local NAME="" ID=$1
+        case $ID in
+            1)
+                NAME="Spartan Starter"
+                ;;
+            5)
+                NAME="Spartan Professional"
+                ;;
+            6)
+                NAME="Spartan Ultimate/Dev"
+                ;;
+            *)
+                NAME="PlaceHolder"
+                ;;
+        esac
+        echo "${NAME:-}"
+    }
+
     get_env_value(){
         local key=$1 
         val=$(grep -E "^${key}=" "$envfile" | head -n 1 | cut -d'=' -f2-)
@@ -1657,6 +1816,7 @@ app_get_var() {
         LICENSE_KEY=$(get_env_value "LICENSE_KEY")
         APP_KEY=$(get_env_value "APP_KEY")
         PRODUCT_ID=$(get_env_value "PRODUCT_ID")
+        PRODUCT_NAME=$(get_product_name "${PRODUCT_ID:-}")
         DB_CONNECTION=$(get_env_value "DB_CONNECTION")
         DB_HOST=$(get_env_value "DB_HOST")
         DB_PORT=$(get_env_value "DB_PORT")
@@ -1731,37 +1891,26 @@ app_setup_dir(){
 }
 
 Summary(){
-    if [[ "$ASSUME_YES" == 0 ]]; then
-        whiptail --title "$TITLE" --yesno "Summary:\n
-Domain: ${DOMAIN}
-App dir: ${APP_DIR}
-Web server: ${WEB}
-Database engine: ${DB_ENGINE}
+    local summary
+    summary+="\n${CHOICE^} Summary:\n\n"
+    summary+="$(hr)\n"
+    summary+="> Product:\n"
+    summary+="-  Name:        ${PRODUCT_NAME:-}\n"
+    summary+="-  ID:          ${PRODUCT_ID:-}\n"
+    summary+="> Domain:       ${DOMAIN:-}\n"
+    [[ "${CHOICE:-}" != "get_link" ]] &&  summary+="> App Path:     ${APP_DIR}\n"
+    [[ -n "${WEB:-}" ]] && summary+="> Web server:   ${WEB:-}\n"
+    if [[ -n "${DB_ENGINE:-}" ]]; then
+        summary+="> DB:\n"
+        summary+="-  Engine:      ${DB_ENGINE:-}\n"
+        summary+="-  Connection:  ${DB_USER:-(not set)}@${DB_HOST:-(not set)}:${DB_PORT:-(not set)}/${DB_NAME:-(not set)}\n"
+    fi
+    summary+="$(hr)\n\n"
 
-DB Host: ${DB_HOST}
-DB Port: ${DB_PORT}
-DB Name: ${DB_NAME}
-DB User: ${DB_USER}
-
-Product: ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
-
-Proceed with installation (live output)?" 22 72 || exit 1
+    if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
+        whiptail --title "$TITLE" --yesno "$summary" 22 73 || exit 1
     else
-        cat <<EOF
-
-Summary:
-- Product = ${PRODUCT_NAME} (ID: ${PRODUCT_ID})
-- Domain = ${DOMAIN}
-- App dir = ${APP_DIR}
-- Web server = ${WEB}
-
-- Database engine = ${DB_ENGINE}
-- DB Host = ${DB_HOST}
-- DB Port = ${DB_PORT}
-- DB Name = ${DB_NAME}
-- DB User = ${DB_USER}
-
-EOF
+        echo -e "$summary"
     fi
 }
 
@@ -1845,6 +1994,15 @@ verify_ssl(){
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --non-interactive)
+                NONINTERACTIVE=1
+                ASSUME_YES=1
+                shift
+                ;;
+            -h|--help)
+                SHOW_HELP=1
+                shift
+                ;;
             --install)
                 ACTION="install"
                 shift
@@ -1853,12 +2011,16 @@ parse_args() {
                 ACTION="update"
                 shift
                 ;;
-            --test)
-                ACTION="test"
+            --get-link|--get-download-link|--download-link) 
+                ACTION="get_link"
                 shift
                 ;;
             --delete|--uninstall)
                 ACTION="uninstall"
+                shift
+                ;;
+            --test)
+                ACTION="test"
                 shift
                 ;;
             --app-dir=*)
@@ -1985,14 +2147,48 @@ parse_args() {
                     exit 1
                 fi
                 ;;
-            --non-interactive)
-                NONINTERACTIVE=1
-                ASSUME_YES=1
-                shift
+            --ipv6=*)
+                local ipv6
+                ipv6="${1#--ipv6=}"
+                if [[ -n "${ipv6-}" ]]; then
+                    case "${ipv6-}" in
+                        true|enable)
+                            ENABLE_IPV6=1
+                            ;;
+                        false|disable)
+                            ENABLE_IPV6=0
+                            ;;
+                    esac
+                    shift
+                else
+                    echo "Missing argument for --ipv6=" >&2
+                    exit 1
+                fi
                 ;;
-            -h|--help)
-                SHOW_HELP=1
-                shift
+            --ipv6)
+                local ipv6
+                ipv6="${2}"
+                if [[ -n "${ipv6-}" ]]; then
+                    case "${ipv6-}" in
+                        true|enable)
+                            ENABLE_IPV6=1
+                            shift 2
+                            ;;
+                        false|disable)
+                            ENABLE_IPV6=0
+                            shift 2
+                            ;;
+                        *)
+                            echo "unsupported argument for --ipv6\ndefaulting to true"
+                            ENABLE_IPV6=1
+                            shift 1
+                            ;;
+                    esac
+                else
+                    echo "No argument provided for --ipv6\ndefaulting to true"
+                    ENABLE_IPV6=1
+                    shift 1
+                fi
                 ;;
             *)
                 echo "Unknown option: $1" >&2
@@ -2031,6 +2227,23 @@ noninteractive_checks(){
         else
             echo "required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
         fi
+    elif [[ "$ACTION" == "get_link" || "$ACTION" == "get link" ]]; then
+        missing_args=()
+        required_args=(
+            ACTION
+            DOMAIN
+            LICENSE_KEY
+            PRODUCT_ID
+        )
+        for arg in "${required_args[@]}"; do
+            [[ -z "${!arg:-}" ]] && missing_args+=("$arg")
+        done
+        if [[ "${#missing_args[@]}" -eq 0 ]]; then
+            echo "All required arguments supplied continuing in non-interactive mode."
+        else
+            echo "Missing arguments for non-interactive mode to continue: ${missing_args[*]}"
+            exit 1
+        fi
     else
         echo "non-interactive mode not available for this action at the moment."
         exit 1
@@ -2043,11 +2256,14 @@ Usage: $0 [OPTIONS]
 
 Options:
     -h, --help                  Show this help message and exit
-    --install                   Run a fresh installation (interactive)
+    --install                   Run a fresh installation (interactive/non-interactive)
     --update                    Update an existing installation (non-interactive)
+    --get-link                  Get the one time download link for spartan (non-interactive)
     --delete, --uninstall       Delete the application directory (no DB removal)
     --non-interactive           hides all confirmation and configuration dialogs
                                 (used for 1 line installs/updates)
+
+    --ipv6                      Enables ipv6 support for requests.
 
     --app-dir=PATH              Sets the application directory (DocumentRoot = PATH/public)
                                 You can also use the spaced form:  --app-dir PATH
@@ -2070,8 +2286,8 @@ Options:
                                 Accepted values:  install | later | assume
                                 You can also use the spaced form:  --ssl-mode MODE
 
-It's also recommanded to use "" in case the script can't find the custom setting example:
-    --app-dir "/Path To/My spartan/Install/"
+It's also recommanded to use -- at the start and "" in case the script can't find the custom setting example:
+    $0 -- --update --app-dir "/Path To/My spartan/Install/"
 EOF
     exit 0
 }
@@ -2118,7 +2334,7 @@ if [[ "$CHOICE" == "install" ]]; then
     license_verify
     license_download_and_extract
     
-    # Now install system stack & app deps
+    # Install system stack & app deps
     install_php_stack
     install_webserver
     no_apache
@@ -2132,12 +2348,14 @@ if [[ "$CHOICE" == "install" ]]; then
     detect_web_user_group
     config_php_fpm
     config_opcache
+    config_network
     app_env_setup
     app_install_steps
     apply_permissions
     setup_cron
     setup_systemd_queue
     
+    nginx_layout_detect
     configure_nginx_http_only
     if [[ -n "${certbot_choice-}" ]]; then
         echo "Skipping certbot/ssl prompt, using provided ssl mode."
@@ -2192,6 +2410,7 @@ if [[ "$CHOICE" == "install" ]]; then
     fi
     
     app_maintenance_off
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
 
     section "All done!"
     echo
@@ -2226,6 +2445,7 @@ elif [[ "$CHOICE" == "update" ]]; then
     app_get_dir
     app_get_var
     detect_web_user_group
+    nginx_layout_detect
 
     # Backup app
     if ! create_backups; then
@@ -2239,6 +2459,8 @@ elif [[ "$CHOICE" == "update" ]]; then
         exit 1
     fi
 
+    Summary
+
     safe_update() {
         update_status=0
         trap 'if [[ $update_status -eq 0 ]]; then restore_backups; fi' EXIT
@@ -2248,6 +2470,8 @@ elif [[ "$CHOICE" == "update" ]]; then
         install_php_stack
         prepare_ioncube
         config_opcache
+        config_network
+
         # Install and set perms
         app_setup_dir
         app_update_steps
@@ -2257,6 +2481,60 @@ elif [[ "$CHOICE" == "update" ]]; then
         
         # Restart services
         if [[ "$WEB" == "nginx" ]]; then
+            section "Updating NGINX configuration"
+            if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
+                echo "Detected HTTPS in .env"
+                CERT_DIR=""
+                local existing_cert_path
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
+
+                    if [[ -n "${existing_cert_path-}" ]]; then
+                        CERT_DIR=$(dirname "${existing_cert_path-}")
+                        echo "Extracted certificate directory from the old NGINX configuration"
+                    fi
+                elif [[ -f "${NGINX_CONF_PATH}" ]]; then
+                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
+
+                    if [[ -n "${existing_cert_path-}" ]]; then
+                        CERT_DIR=$(dirname "${existing_cert_path-}")
+                        echo "Extracted certificate directory from the old NGINX configuration"
+                    fi
+                fi
+
+                if [[ -z ${CERT_DIR-} ]]; then
+                    if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
+                        CERT_DIR="/etc/certs/spartan/${DOMAIN}"
+                    elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+                        CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+                    else
+                        CERT_DIR=""
+                    fi
+                fi
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                fi
+
+                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                fi
+
+                configure_nginx_ssl
+            else
+                echo "Detected HTTP in .env"
+
+                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                fi
+
+                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                fi
+
+                configure_nginx_http_only
+            fi
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
         elif [[ "$WEB" == "apache" ]]; then
@@ -2266,6 +2544,7 @@ elif [[ "$CHOICE" == "update" ]]; then
         fi
         
         app_maintenance_off
+        run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
         update_status=1
 
         trap - EXIT
@@ -2297,6 +2576,21 @@ elif [[ "$CHOICE" == "update" ]]; then
         echo
     }
     safe_update
+    exit 0
+elif [[ "$CHOICE" == "get_link" || "$ACTION" == "get link" ]]; then
+    app_get_dir
+    app_get_var
+    detect_web_user_group
+
+    ask_domain
+    ask_license_key
+    Summary
+
+    if ! license_verify; then
+        exit 1
+    fi
+
+    request_downlaod_link
     exit 0
 elif [[ "$CHOICE" == "uninstall" ]]; then
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
