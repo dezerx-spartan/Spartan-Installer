@@ -2578,9 +2578,9 @@ elif [[ "$CHOICE" == "update" ]]; then
     safe_update
     exit 0
 elif [[ "$CHOICE" == "get_link" || "$ACTION" == "get link" ]]; then
-    # app_get_dir
-    # app_get_var
-    # detect_web_user_group
+    app_get_dir
+    app_get_var
+    detect_web_user_group
 
     ask_domain
     ask_license_key
