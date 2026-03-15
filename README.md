@@ -8,10 +8,10 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 ## Chapters
 
-- [Features](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#features)
-- [Requirements](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#requirements)
-- [How to install](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#how-to-install)
-- [Troubleshooting](http://192.168.1.66:3000/DezerX/Install-Script/src/branch/dev/#troubleshooting)
+- [Features](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Features)
+- [Requirements](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Requirements)
+- [How to install](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#How-To-install)
+- [Troubleshooting](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Troubleshooting)
 
 ## Features
 
@@ -36,7 +36,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Copy & Paste the command**
 
    ```bash
-   sudo bash -c "$(curl -fsSL 'http://192.168.1.66:3000/DezerX/Install-Script/raw/branch/dev/spartan_installer.sh')"
+   sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/dezerx-spartan/Spartan-Installer/dev/spartan_installer.sh')"
    ```
 
 2. **Follow the interactive prompts to complete the installation.**
@@ -45,7 +45,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 1. **Copy & Paste the command then remplace placeholders values with your own**
    ```bash
-   sudo bash -c "$(curl -fsSL 'http://192.168.1.66:3000/DezerX/Install-Script/raw/branch/dev/spartan_installer.sh') -- --non-interactive --install --license=XXXXXXXXXXXXXXX_XXXXXX --domain dash.example.com --webserver=nginx --ssl-mode=install --db-type=mariadb"
+   sudo bash -c "$(curl -fsSL 'https://raw.githubusercontent.com/dezerx-spartan/Spartan-Installer/dev/spartan_installer.sh') -- --non-interactive --install --license=XXXXXXXXXXXXXXX_XXXXXX --domain dash.example.com --webserver=nginx --ssl-mode=install --db-type=mariadb"
    ```
 
 ### Manualy
@@ -53,7 +53,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Clone the repository:**
 
    ```bash
-   git clone -b dev http://192.168.1.66:3000/DezerX/Install-Script.git
+   git clone -b dev https://github.com/dezerx-spartan/Spartan-Installer.git
    cd Spartan-Installer
    ```
 
