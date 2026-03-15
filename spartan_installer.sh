@@ -212,6 +212,8 @@ app_prepare_dir(){
         rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
+            "${APP_DIR}/Modules" \
+            "${APP_DIR}/resources/views/emails" \
             "${APP_DIR}/modules_statuses.json" \
             "${APP_DIR}/.env" \
             "${update_tmpdir}/" 2>/dev/null || true
@@ -242,8 +244,10 @@ app_prepare_dir(){
 }
 
 app_restore_files(){
+    mkdir -p "${APP_DIR}/resources/views/emails"
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
+    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
     if [[ "$css_save_methode" == "fallback" ]]; then
         run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
@@ -793,7 +797,7 @@ request_downlaod_link(){
     [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
 
     section "License OK"
-    echo "Download URL (one-time): $URL"
+    echo "\nDownload URL (one-time): $URL"
     [[ -n "$NAME" ]] && echo "Product: $NAME"
     [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
     [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
@@ -842,8 +846,8 @@ license_download_and_extract(){
     [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
     
     section "License OK"
-    echo "Download URL (one-time): $URL"
-    [[ -n "$name" ]] && echo "Product: $name"
+    echo "\nDownload URL (one-time): $URL"
+    [[ -n "$NAME" ]] && echo "Product: $NAME"
     [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
     [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
     
