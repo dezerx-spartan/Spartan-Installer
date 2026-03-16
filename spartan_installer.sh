@@ -215,6 +215,7 @@ app_prepare_dir(){
             "${APP_DIR}/Modules" \
             "${APP_DIR}/resources/views/emails" \
             "${APP_DIR}/modules_statuses.json" \
+            "${APP_DIR}/resources/js/pages/theme/default" \
             "${APP_DIR}/.env" \
             "${update_tmpdir}/" 2>/dev/null || true
     fi
@@ -240,14 +241,20 @@ app_prepare_dir(){
         else
             section "No portal backup found - nothing to restore"
         fi
+        if [[ -d "${update_tmpdir}/default" ]]; then
+            mkdir -p "${APP_DIR}/resources/js/pages/theme/default"
+            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/default/" "${APP_DIR}/resources/js/pages/theme/default/" || true
+        fi
+        if [[ -d "${update_tmpdir}/emails" ]]; then
+            mkdir -p "${APP_DIR}/resources/views/emails"
+            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
+        fi
     fi
 }
 
 app_restore_files(){
-    mkdir -p "${APP_DIR}/resources/views/emails"
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
-    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
     if [[ "$css_save_methode" == "fallback" ]]; then
         run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
@@ -797,13 +804,13 @@ request_downlaod_link(){
     [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
 
     section "License OK"
-    echo "\nDownload URL (one-time): $URL"
-    [[ -n "$NAME" ]] && echo "Product: $NAME"
-    [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
-    [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
+    echo -e "\nDownload URL (one-time): $URL"
+    [[ -n "$NAME" ]] && echo -e  "Product: $NAME"
+    [[ -n "$EXPIRES" ]] && echo -e "Expires on: $EXPIRES"
+    [[ -n "$SIZE" ]] && echo -e "File size: $SIZE bytes\n"
 
     if [[ "$NONINTERACTIVE" == 0 ]]; then
-        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires at:${expires:-Unknown}" 12 78
+        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires on: ${EXPIRES:-Unknown}" 12 78
     fi
 }
 
@@ -846,10 +853,10 @@ license_download_and_extract(){
     [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
     
     section "License OK"
-    echo "\nDownload URL (one-time): $URL"
-    [[ -n "$NAME" ]] && echo "Product: $NAME"
-    [[ -n "$EXPIRES" ]] && echo "Expires at: $EXPIRES"
-    [[ -n "$SIZE" ]] && echo "File size: $SIZE bytes"
+    echo -e "\nDownload URL (one-time): $URL"
+    [[ -n "$NAME" ]] && echo -e  "Product: $NAME"
+    [[ -n "$EXPIRES" ]] && echo -e "Expires on: $EXPIRES"
+    [[ -n "$SIZE" ]] && echo -e "File size: $SIZE bytes"
     
     local OUT="$TMPDIR/app"
     mkdir -p "$OUT"
@@ -1128,7 +1135,6 @@ server {
 
 server {
     ${listen_443}
-    http2 on;
     server_name ${DOMAIN};
 
     root ${APP_DIR}/public;
