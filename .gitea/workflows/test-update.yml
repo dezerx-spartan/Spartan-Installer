@@ -1,0 +1,93 @@
+name: Test update
+
+on: [workflow_dispatch]
+
+jobs:
+  test-script:
+    runs-on: ubuntu-latest
+    env:
+      CONTAINER_NAME: spartan-test-${{ github.run_id }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start Ubuntu Systemd Container
+        run: |
+          mkdir -p ./ci-cache/apt ./ci-cache/npm ./ci-cache/composer
+          docker run -d --name $CONTAINER_NAME \
+            -p 8081:80 -p 9443:443 \
+            --privileged \
+            --cgroupns=host \
+            --tmpfs /tmp \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v /tmp/spartan-ci-cache/apt:/var/cache/apt/archives \
+            -v /tmp/spartan-ci-cache/npm:/root/.npm \
+            -v /tmp/spartan-ci-cache/composer:/root/.composer/cache \
+            jrei/systemd-ubuntu:22.04
+
+          echo "Waiting for systemd to be ready..."
+          TIMEOUT=60
+          ELAPSED=0
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            STATUS=$(docker exec $CONTAINER_NAME systemctl is-system-running 2>/dev/null || echo "not-ready")
+            if [ "$STATUS" = "running" ] || [ "$STATUS" = "degraded" ]; then
+              echo "Systemd is ready (status: $STATUS) in $ELAPSED seconds!"
+              break
+            fi
+
+            echo "Status is '$STATUS'. Waiting..."
+            sleep 2
+            ELAPSED=$((ELAPSED+2))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "Error: systemd did not start within $TIMEOUT seconds."
+            docker logs $CONTAINER_NAME
+            exit 1
+          fi
+
+      - name: Copy files to container
+        run: docker cp . $CONTAINER_NAME:/opt/spartan-installer
+
+      - name: Test install
+        env:
+          SPARTAN_LICENSE: ${{ secrets.SPARTAN_LICENSE }}
+        run: |
+          docker exec $CONTAINER_NAME bash -c "cd /opt/spartan-installer && chmod +x ./spartan_installer.sh && bash spartan_installer.sh --non-interactive --install --license=$SPARTAN_LICENSE --domain spartan.test.blipzoo.ovh --webserver=nginx --ssl-mode=assume --db-type=mariadb"
+
+      - name: Pause for manual inspection
+        run: |
+          echo "The installation is done!"
+          echo "Go to https://82.66.77.131:9443 to test the site."
+          echo "The container will self-destruct in 5 minutes..."
+          echo -e "You can enter it by doing: docker exec -it $CONTAINER_NAME bash"
+          sleep 300
+
+      - name: Test Update
+        run: |
+          docker exec $CONTAINER_NAME bash -c "cd /opt/spartan-installer && bash spartan_installer.sh --non-interactive --update"
+
+      - name: Pause for manual inspection
+        run: |
+          echo "The installation is done!"
+          echo "Go to https://82.66.77.131:9443 to test the site."
+          echo "The container will self-destruct in 25 minutes..."
+          echo -e "You can enter it by doing: docker exec -it $CONTAINER_NAME bash"
+          sleep 1500
+
+      - name: Extract Log File
+        if: always()
+        run: docker cp $CONTAINER_NAME:/var/log/spartan_installer.log ./spartan_installer.log || true
+
+      - name: Upload Installer Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spartan-installer-log
+          path: ./spartan_installer.log
+
+      - name: Cleanup Test Environment
+        if: always()
+        run: docker rm -f $CONTAINER_NAME

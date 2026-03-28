@@ -18,12 +18,20 @@ APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 PHP_VER="8.4"
 
+OPTIONS_JSON_NAME="script_options.json"
+
 ACTION=""
 ASSUME_YES=0
 SHOW_HELP=0
 NONINTERACTIVE=0
 USED_APP_DIR=0
 ENABLE_IPV6=0
+KEEP_NGINX=0
+KEEP_THEMES=1
+KEEP_PORTALS=1
+KEEP_EMAILS=1
+KEEP_FAVICON=1
+KEEP_CSS=1
 
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
@@ -164,6 +172,118 @@ start_service(){
     return 1
 }
 
+ensure_options_json(){
+    local f; f="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    if [[ ! -f "${f}" ]]; then
+        run "Creating ${OPTIONS_JSON_NAME}" bash -lc "cat > '${f}' <<'EOF'
+{
+    \"keep\": {
+        \"nginx\": false,
+        \"css\": true,
+        \"themes\": true,
+        \"portals\": true,
+        \"emails\": true,
+        \"favicon\": true
+    },
+    \"exclude\": {
+        \"files\": [],
+        \"folders\": []
+    }
+    \"delete\": []
+}
+EOF"
+    fi
+}
+
+load_options_json_flags(){
+    local json_file="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    [[ -f "$json_file" ]] || return 0
+
+
+    if ! jq -e . "$json_file" >/dev/null 2>&1; then
+        echo "Invalid json in ${json_file}. Skipping advanced exclusions."
+        return 0
+    fi
+
+    section "Reading keep preferences from ${OPTIONS_JSON_NAME}"
+
+    while IFS='=' read -r key val; do
+        [[ -z "$key" ]] && continue
+
+        local upper_key="${key^^}"
+
+        if [[ "$val" == "true" ]]; then
+            printf -v "KEEP_${upper_key}" "1"
+            echo "KEEP_${upper_key}=1"
+        elif [[ "$val" == "false" ]]; then
+            printf -v "KEEP_${upper_key}" "0"
+            echo "KEEP_${upper_key}=0"
+        fi
+    done < <(jq -r '.keep? | to_entries[]? | "\(.key)=\(.value)"' "$json_file")
+}
+
+process_options_json(){
+    local json_file="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    [[ -f "$json_file" ]] || return 0
+
+    section "Processing exclusions from ${OPTIONS_JSON_NAME}"
+
+    if ! jq -e . "$json_file" >/dev/null 2>&1; then
+        echo "Invalid json in ${json_file}. Skipping advanced exclusions."
+        return 0
+    fi
+
+    EXCLUDE_TMPDIR=$(mktemp -d "/tmp/spartan_exclude.XXXXXX")
+
+    cp -a "$json_file" "${EXCLUDE_TMPDIR}/${OPTIONS_JSON_NAME}"
+
+
+    jq -r '.exclude.files[]?, .exclude.folders[]? // empty'  "$json_file" | while read -r item; do
+        [[ -z "$item" ]] && continue
+        good_path="${item#"$APP_DIR"}"
+        good_path="${good_path#/}"
+        good_path="${good_path%/}"
+        src_path="${APP_DIR}/${good_path}"
+        if [[ -f "$src_path" || -d "$src_path" ]]; then
+            mkdir -p "${EXCLUDE_TMPDIR}/$(dirname "$good_path")"
+            cp -a "$src_path" "${EXCLUDE_TMPDIR}/${good_path}"
+            echo "Excluded: $good_path"
+        fi
+    done
+
+    jq -r '.delete[]? // empty' "$json_file" | while read -r item; do
+        [[ -z "$item" ]] && continue
+        good_path="${item#"$APP_DIR"}"
+        good_path="${good_path#/}"
+        good_path="${good_path%/}"
+        [[ -z "$good_path" ]] && continue
+        if [[ "$good_path" == *".."* ]]; then
+            echo "Warning: '..' not allowed in $good_path";
+            continue
+        fi
+        src_path="${APP_DIR}/${good_path}"
+        if [[ "$src_path" != "$APP_DIR"/* ]]; then
+            echo "CRITICAL: Path $src_path escaped $APP_DIR. Skipping."
+            continue
+        fi
+        if [[ -f "$src_path" ]]; then
+            rm -f "$src_path"
+            echo "Deleted file: $src_path"
+        elif [[ -d "$src_path" ]]; then
+            rm -fr "$src_path"
+            echo "Deleted folder: $src_path"
+        fi
+    done
+}
+
+restore_options_items(){
+    if [[ -n "${EXCLUDE_TMPDIR:-}" && -d "${EXCLUDE_TMPDIR:-}" ]]; then
+        section "Restoring items from ${OPTIONS_JSON_NAME}"
+        rsync -a --ignore-missing-args "${EXCLUDE_TMPDIR:-}/" "${APP_DIR}/"
+        [[ -n "${EXCLUDE_TMPDIR}" && "${EXCLUDE_TMPDIR}" != "/" ]] && rm -fr "${EXCLUDE_TMPDIR}" || true
+    fi
+}
+
 app_prepare_dir(){
     run "Ensuring app directory '${APP_DIR}' exists" bash -lc "mkdir -p '${APP_DIR}'"
 
@@ -174,48 +294,62 @@ app_prepare_dir(){
     css_save_methode=""
 
     if [[ $CHOICE == "update" ]]; then
+        process_options_json
         update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
 
-        if php "${APP_DIR}/artisan" help theme:backup --no-interaction >/dev/null 2>&1; then
-            css_save_methode="php"
-        else
-            css_save_methode="fallback"
-        fi
-
-        if [[ "$css_save_methode" == "php" ]]; then
-            if ! run "Saving dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"; then
-                css_save_methode="fallback"
-                run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
-            fi
-        else
-            css_save_methode="fallback"
-            run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
-        fi
-
-        if [[ -d "${APP_DIR}/resources/js/pages/Portal" ]]; then
-            portals="$(find "${APP_DIR}/resources/js/pages/Portal" -mindepth 1 -maxdepth 1 -type d ! -iname "default" -printf '.' | wc -c)"
-            if [[ "$portals" -gt 0 ]]; then
-                [[ ! -d "${update_tmpdir}/Portals" ]] && mkdir -p "${update_tmpdir}/Portals"
-                run "Saving dashboard portals" bash -lc "rsync -a --remove-source-files --exclude='Default' --exclude='default' '${APP_DIR}/resources/js/pages/Portal/' '${update_tmpdir}/Portals/' 2>/dev/null || true"
+        if [[ "$KEEP_CSS" == 1 ]]; then
+            if php "${APP_DIR}/artisan" help theme:backup --no-interaction >/dev/null 2>&1; then
+                css_save_methode="php"
             else
-                echo "No custom portals found to save - skipping"
+                css_save_methode="fallback"
             fi
-        else
-            echo "Portal source directory does not exist - skipping"
+
+            if [[ "$css_save_methode" == "php" ]]; then
+                if ! run "Saving dashboard css (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"; then
+                    css_save_methode="fallback"
+                    run "Saving dashboard css (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
+                fi
+            else
+                css_save_methode="fallback"
+                run "Saving dashboard css (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
+            fi
         fi
 
-        [[ ! -d "${update_tmpdir}/favicon" ]] && mkdir -p "${update_tmpdir}/favicon"
-        rsync -a --remove-source-files --ignore-missing-args \
-            "${APP_DIR}/public/favicon.ico" \
-            "${APP_DIR}/public/favicon.svg" \
-            "${update_tmpdir}/favicon/" 2>/dev/null || true
+        if [[ "$KEEP_THEMES" == 1 ]]; then
+            run "Saving themes" bash -lc "rsync -a --remove-source-files --ignore-missing-args '${APP_DIR}/resources/js/pages/theme' '${update_tmpdir}/' 2>/dev/null || true"
+        fi
+
+        if [[ "$KEEP_PORTALS" == 1 ]]; then
+            if [[ -d "${APP_DIR}/resources/js/pages/Portal" ]]; then
+                portals="$(find "${APP_DIR}/resources/js/pages/Portal" -mindepth 1 -maxdepth 1 -type d ! -iname "default" -printf '.' | wc -c)"
+                if [[ "$portals" -gt 0 ]]; then
+                    [[ ! -d "${update_tmpdir}/Portals" ]] && mkdir -p "${update_tmpdir}/Portals"
+                    run "Saving dashboard portals" bash -lc "rsync -a --remove-source-files --exclude='Default' --exclude='default' '${APP_DIR}/resources/js/pages/Portal/' '${update_tmpdir}/Portals/' 2>/dev/null || true"
+                else
+                    echo "No custom portals found to save - skipping"
+                fi
+            else
+                echo "Portal source directory does not exist - skipping"
+            fi
+        fi
+
+        if [[ "$KEEP_EMAILS" == 1 ]]; then
+            run "Saving email templates" bash -lc "rsync -a --remove-source-files --ignore-missing-args '${APP_DIR}/resources/views/emails' '${update_tmpdir}/' 2>/dev/null || true"
+        fi
+
+        if [[ "$KEEP_FAVICON" == 1 ]]; then
+            [[ ! -d "${update_tmpdir}/favicon" ]] && mkdir -p "${update_tmpdir}/favicon"
+            rsync -a --remove-source-files --ignore-missing-args \
+                "${APP_DIR}/public/favicon.ico" \
+                "${APP_DIR}/public/favicon.svg" \
+                "${update_tmpdir}/favicon/" 2>/dev/null || true
+        fi
+
         rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
             "${APP_DIR}/Modules" \
-            "${APP_DIR}/resources/views/emails" \
             "${APP_DIR}/modules_statuses.json" \
-            "${APP_DIR}/resources/js/pages/theme/default" \
             "${APP_DIR}/.env" \
             "${update_tmpdir}/" 2>/dev/null || true
     fi
@@ -235,28 +369,26 @@ app_prepare_dir(){
             "${update_tmpdir}/Modules" \
             "${APP_DIR}/" 2>/dev/null || true
         mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
-        if [[ -d "${update_tmpdir}/Portals" ]]; then
+        if [[ "$KEEP_PORTALS" == 1 && -d "${update_tmpdir}/Portals" ]]; then
             mkdir -p "${APP_DIR}/resources/js/pages/Portal"
-            run "Restoring dashboard portals" bash -lc "rsync -a '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
-        else
-            section "No portal backup found - nothing to restore"
+            run "Restoring dashboard portals" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
         fi
-        if [[ -d "${update_tmpdir}/default" ]]; then
-            mkdir -p "${APP_DIR}/resources/js/pages/theme/default"
-            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/default/" "${APP_DIR}/resources/js/pages/theme/default/" || true
+        if [[ "$KEEP_THEMES" == 1 && -d "${update_tmpdir}/theme" ]]; then
+            mkdir -p "${APP_DIR}/resources/js/pages/theme"
+            run "Restoring themes" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/default/' '${APP_DIR}/resources/js/pages/theme/default/' || true"
         fi
-        if [[ -d "${update_tmpdir}/emails" ]]; then
+        if [[ "$KEEP_EMAILS" == 1 && -d "${update_tmpdir}/emails" ]]; then
             mkdir -p "${APP_DIR}/resources/views/emails"
-            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
+            run "Restoring email templates" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/emails/' '${APP_DIR}/resources/views/emails/' || true"
         fi
     fi
 }
 
 app_restore_files(){
     rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
-    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
-    if [[ "$css_save_methode" == "fallback" ]]; then
-        run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
+    [[ "$KEEP_FAVICON" == 1 ]] && rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
+    if [[ "$KEEP_CSS" == 1 && "$css_save_methode" == "fallback" ]]; then
+        run "Restoring dashboard css (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
 }
@@ -353,6 +485,24 @@ no_apache(){
     else
         section "No apache cave diver found"
     fi
+}
+
+rotate_backups(){
+    section "Rotating old backups (Keeping the 7 most recent of each type)"
+
+    local perfixes=(
+        "spartan_backup_"
+        "spartan_db_backup_"
+        "spartan_php_backup_"
+        "spartan_ioncube_backup_"
+        "spartan_conf_backup_"
+    )
+
+    for perfix in "${prefixes[@]}"; do
+        ls -t "${BACKUP_DIR}/${prefix}"* 2>dev/null | tail -n +8 | xargs -r rm -f
+    done
+
+    echo "Old backups cleaned up."
 }
 
 # ---------------- Menüs ----------------
@@ -559,14 +709,11 @@ install_nodejs_lts(){
             run "Setup NodeSource LTS" bash -lc "curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource.sh && bash /tmp/nodesource.sh"
             pm_install nodejs
         ;;
-        fedora)
-            run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
-            pm_install nodejs || { run "Enable nodejs:lts module" dnf -y module enable nodejs:lts; pm_install nodejs; } || true
-        ;;
-        centos|rhel|almalinux|rocky)
+        fedora|centos|rhel|almalinux|rocky)
             run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
             if have dnf; then 
-                pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
+                run "Resetting Node.js DNF module" dnf module reset nodejs -y || true
+                run "Installing/Updating Node.js" dnf install -y nodejs
             else 
                 pm_install nodejs || true
             fi
@@ -574,6 +721,7 @@ install_nodejs_lts(){
         *) pm_install nodejs || true ;;
     esac
     have npm || pm_install npm || true
+    section "Node.js version: $(node -v)"
 }
 
 install_webserver(){
@@ -811,6 +959,37 @@ request_downlaod_link(){
 
     if [[ "$NONINTERACTIVE" == 0 ]]; then
         whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires on: ${EXPIRES:-Unknown}" 12 78
+    fi
+}
+
+ask_what_to_keep(){
+    load_options_json_flags
+    if [[ "$NONINTERACTIVE" == 0 ]]; then
+        local s_nginx="OFF" s_css="ON" s_theme="ON" s_portals="ON" s_emails="ON" s_favicon="ON"
+        [[ "${KEEP_NGINX:-}" == 1 ]] && s_nginx="ON"
+        [[ "${KEEP_CSS:-}" == 1 ]] && s_css="ON"
+        [[ "${KEEP_THEMES:-}" == 1 ]] && s_themes="ON"
+        [[ "${KEEP_PORTALS:-}" == 1 ]] && s_portals="ON"
+        [[ "${KEEP_EMAILS:-}" == 1 ]] && s_emails="ON"
+        [[ "${KEEP_FAVICON:-}" == 1 ]] && s_favicon="ON"
+
+        local choices
+        choices=$(whiptail --title "$TITLE" --checklist \
+        "Select components to KEEP during the update (Space to toggle):\n(Advanced exclusions can be set in ${OPTIONS_JSON_NAME})" 16 75 5 \
+        "NGINX" "Keep current NGINX configuration" $s_nginx \
+        "CSS" "Keep custom dashboard CSS" $s_css \
+        "THEMES" "Keep custom dashboard themes" $s_themes \
+        "PORTALS" "Keep custom portals" $s_portals \
+        "EMAILS" "Keep custom email templates" $s_emails \
+        "FAVICON" "Keep custom favicons" $s_favicon 3>&1 1>&2 2>&3) || true
+
+        KEEP_NGINX=0; KEEP_CSS=0; KEEP_THEME=0; KEEP_PORTALS=0; KEEP_EMAILS=0; KEEP_FAVICON=0
+        [[ $choices == *"\"NGINX\""* ]] && KEEP_NGINX=1
+        [[ $choices == *"\"CSS\""* ]] && KEEP_CSS=1
+        [[ $choices == *"\"THEMES\""* ]] && KEEP_THEMES=1
+        [[ $choices == *"\"PORTALS\""* ]] && KEEP_PORTALS=1
+        [[ $choices == *"\"EMAILS\""* ]] && KEEP_EMAILS=1
+        [[ $choices == *"\"FAVICON\""* ]] && KEEP_FAVICON=1
     fi
 }
 
@@ -1410,11 +1589,76 @@ app_env_setup(){
     env_write_value "DB_PASSWORD" "${DB_PASS}"
 }
 
+safe_npm_build(){
+    [[ -f "${APP_DIR}/package.json" ]] || return
+
+    section "Analyzing system memory for npm run build"
+
+    local total_ram total_swap
+    total_ram=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+    total_swap=$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+
+    local current_total=$((total_ram + total_swap))
+
+    local target_memory=4096
+    local os_overhead=512
+
+    local swap_needed=0
+    local swap_file="/swapfile_spartan_temp"
+    local swap_added=0
+
+    echo "Detected Memory: ${total_ram}MB RAM + ${total_swap}MB Swap (Total: ${current_total}MB)"
+
+    if (( $current_total < $target_memory )); then
+        swap_needed=$((target_memory - current_total + os_overhead))
+        echo "System falls short of targeted ${target_memory}MB required memory. Need ${swap_needed}MB additional memory."
+
+        section "Creating temporary ${swap_needed}MB of swap space"
+
+        if ! swapon --show | grep -q "$swap_file"; then
+            run "Allocating swap file" dd if=/dev/zero of="$swap_file" bs=1M count="$swap_needed" status=none
+            chmod 600 "$swap_file"
+            mkswap "$swap_file" >/dev/null 2>&1
+            swapon "$swap_file" >/dev/null 2>&1
+            swap_added=1
+            echo "Temporary swap enabled."
+
+            current_total=$((current_total + swap_needed))
+        fi
+    else
+        echo "Memory is sufficient. No temporary swap needed."
+    fi
+
+    local node_max_mem=$((current_total - os_overhead))
+
+    if (( node_max_mem > 8192 )); then
+        node_max_mem=8192
+    fi
+
+    section "Building assets (NODE_OPTIONS='--max-old-space-size=${node_max_mem}')"
+
+    local build_status=0
+    run "npm run build" bash -lc "cd '${APP_DIR}' && NODE_OPTIONS='--max-old-space-size=${node_max_mem}' npm run build" || build_status=$?
+
+    if [[ $swap_added -eq 1 ]]; then
+        echo "Removing temporary swap file..."
+        swapoff "$swap_file" >/dev/null 2>&1 || true
+        rm -f "$swap_file"
+    fi
+
+    if [[ $build_status -eq 0 ]]; then
+        echo "npm run build succeeded!"
+    else
+        echo "npm run build failed (Exit Code: $build_status)."
+        return 1
+    fi
+}
+
 app_install_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    safe_npm_build
     app_maintenance_on
     run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force"
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
@@ -1426,23 +1670,21 @@ app_update_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     app_maintenance_on
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
     if [[ "$css_save_methode" == "php" ]]; then
         run "Restoring dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --restore"
-        run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     fi
-    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+    safe_npm_build
 }
 
 app_restore_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
     [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    safe_npm_build
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
 }
@@ -1686,7 +1928,7 @@ create_backups(){
 restore_ioncube_backup() {
     if [[ -n "${IONCUBE_BACKUP_FILE:-}" && -f "$IONCUBE_BACKUP_FILE" ]]; then
         section "Restoring IonCube from ${IONCUBE_BACKUP_FILE}"
-        tar -xzf "$IONCUBE_BACKUP_FILE" -C / || die "Failed to restore IonCube backup."
+        tar -xzf "$IONCUBE_BACKUP_FILE" -C / || echo "Failed to restore IonCube backup."
         echo "IonCube backup restored." | tee -a "$LOG"
     else
         echo "No IonCube backup file to restore."
@@ -1696,7 +1938,7 @@ restore_ioncube_backup() {
 restore_php_backup() {
     if [[ -n "${PHP_BACKUP_FILE:-}" && -f "$PHP_BACKUP_FILE" ]]; then
         section "Restoring IonCube from ${PHP_BACKUP_FILE}"
-        tar -xzf "$PHP_BACKUP_FILE" -C / || die "Failed to restore PHP backup."
+        tar -xzf "$PHP_BACKUP_FILE" -C / || echo "Failed to restore PHP backup."
         echo "PHP backup restored" | tee -a "$LOG"
     else
         echo "No PHP backup file to restore." | tee -a "$LOG"
@@ -1724,7 +1966,7 @@ restore_app_backup() {
         section "Restoring backup from ${APP_BACKUP_FILE}"
         find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
         [[ -d "$APP_DIR" ]] || mkdir -p "$APP_DIR"
-        tar -xzf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
+        tar -xzf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" || echo "Failed to restore app backup."
         echo "Backup restored successfully." | tee -a "$LOG"
     else
         echo "No app backup file found to restore." | tee -a "$LOG"
@@ -1735,7 +1977,7 @@ restore_db_backup() {
     if [[ -n "$DB_BACKUP_FILE" && -f "$DB_BACKUP_FILE" ]]; then
         if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
             section "Restoring database backup from ${DB_BACKUP_FILE}"
-            gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
+            gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || echo "Failed to restore database backup."
             echo "Database backup restored successfully." | tee -a "$LOG"
         else
             echo "Unsupported database engine: ${DB_ENGINE}" | tee -a "$LOG"
@@ -1746,6 +1988,7 @@ restore_db_backup() {
 }
 
 restore_backups() {
+    set +e
     section "Something went wrong! restoring backups..."
     restore_app_backup
     restore_db_backup
@@ -1755,7 +1998,7 @@ restore_backups() {
     app_restore_steps
     apply_permissions
     app_maintenance_off
-    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear" || true
     die "Backups restored!"
 }
 
@@ -2196,6 +2439,53 @@ parse_args() {
                     shift 1
                 fi
                 ;;
+            --keep-nginx)
+                KEEP_NGINX=1
+                shift
+                ;;
+            --keep-css)
+                KEEP_CSS=1
+                shift
+                ;;
+            --keep-themes)
+                KEEP_THEMES=1
+                shift
+                ;;
+            --keep-portals)
+                KEEP_PORTALS=1
+                shift
+                ;;
+            --keep-emails)
+                KEEP_EMAILS=1
+                shift
+                ;;
+            --keep-favicon)
+                KEEP_FAVICON=1
+                shift
+                ;;
+            --options-file) 
+                local optionsFile
+                optionsFile="${2:-}"
+                if [[ -n "${optionsFile}" ]]; then
+                    OPTIONS_JSON_NAME="${optionsFile}"
+                    shift 2
+                else
+                    echo "Missing argument for --exclude-file" >&2
+                    exit 1
+                fi
+                ;;
+            --options-file=*) 
+                local optionsFile
+                optionsFile="${1#--exclude-file=:-}"
+                if [[ -n "${optionsFile}" ]]; then
+                    OPTIONS_JSON_NAME="${optionsFile}"
+                    shift 2
+                else
+                    echo "Missing argument for --exclude-file=" >&2
+                    exit 1
+                fi
+                shift
+                ;;
             *)
                 echo "Unknown option: $1" >&2
                 shift
@@ -2229,9 +2519,9 @@ noninteractive_checks(){
         fi
     elif [[ "$ACTION" == "update" ]]; then
         if [[ "$USED_APP_DIR" == 1 ]]; then
-            echo "All required arguments supplied continuing in non-interactive mode."
+            echo "All required and optional arguments supplied continuing in non-interactive mode."
         else
-            echo "required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
+            echo "All required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
         fi
     elif [[ "$ACTION" == "get_link" || "$ACTION" == "get link" ]]; then
         missing_args=()
@@ -2414,7 +2704,8 @@ if [[ "$CHOICE" == "install" ]]; then
         esac
 
     fi
-    
+
+    ensure_options_json    
     app_maintenance_off
     run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
 
@@ -2465,6 +2756,8 @@ elif [[ "$CHOICE" == "update" ]]; then
         exit 1
     fi
 
+    ask_what_to_keep
+
     Summary
 
     safe_update() {
@@ -2474,6 +2767,7 @@ elif [[ "$CHOICE" == "update" ]]; then
         license_download_and_extract
         
         install_php_stack
+        install_nodejs_lts
         prepare_ioncube
         config_opcache
         config_network
@@ -2481,65 +2775,70 @@ elif [[ "$CHOICE" == "update" ]]; then
         # Install and set perms
         app_setup_dir
         app_update_steps
+        restore_options_items
         apply_permissions
         setup_cron
         setup_systemd_queue
         
-        # Restart services
+        # Restart services and update nginx config
         if [[ "$WEB" == "nginx" ]]; then
-            section "Updating NGINX configuration"
-            if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
-                echo "Detected HTTPS in .env"
-                CERT_DIR=""
-                local existing_cert_path
+            if [[ "$KEEP_NGINX" == "0" ]]; then
+                section "Updating NGINX configuration"
+                if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
+                    echo "Detected HTTPS in .env"
+                    CERT_DIR=""
+                    local existing_cert_path
 
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
 
-                    if [[ -n "${existing_cert_path-}" ]]; then
-                        CERT_DIR=$(dirname "${existing_cert_path-}")
-                        echo "Extracted certificate directory from the old NGINX configuration"
+                        if [[ -n "${existing_cert_path-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                            echo "Extracted certificate directory from the old NGINX configuration"
+                        fi
+                    elif [[ -f "${NGINX_CONF_PATH}" ]]; then
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
+
+                        if [[ -n "${existing_cert_path-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                            echo "Extracted certificate directory from the old NGINX configuration"
+                        fi
                     fi
-                elif [[ -f "${NGINX_CONF_PATH}" ]]; then
-                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
 
-                    if [[ -n "${existing_cert_path-}" ]]; then
-                        CERT_DIR=$(dirname "${existing_cert_path-}")
-                        echo "Extracted certificate directory from the old NGINX configuration"
+                    if [[ -z ${CERT_DIR-} ]]; then
+                        if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
+                            CERT_DIR="/etc/certs/spartan/${DOMAIN}"
+                        elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+                            CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+                        else
+                            CERT_DIR=""
+                        fi
                     fi
-                fi
 
-                if [[ -z ${CERT_DIR-} ]]; then
-                    if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
-                        CERT_DIR="/etc/certs/spartan/${DOMAIN}"
-                    elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
-                        CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
-                    else
-                        CERT_DIR=""
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
                     fi
-                fi
 
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
-                fi
+                    if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                        run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                    fi
 
-                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
-                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
-                fi
+                    configure_nginx_ssl
+                else
+                    echo "Detected HTTP in .env"
 
-                configure_nginx_ssl
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                    fi
+
+                    if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                        run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                    fi
+
+                    configure_nginx_http_only
+                fi
             else
-                echo "Detected HTTP in .env"
-
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
-                fi
-
-                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
-                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
-                fi
-
-                configure_nginx_http_only
+                echo "Skipping NGINX configuration update"
             fi
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
@@ -2549,8 +2848,10 @@ elif [[ "$CHOICE" == "update" ]]; then
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
         fi
         
+        ensure_options_json
         app_maintenance_off
         run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+        rotate_backups
         update_status=1
 
         trap - EXIT
@@ -2611,7 +2912,7 @@ elif [[ "$CHOICE" == "uninstall" ]]; then
 elif [[ "$CHOICE" == "test" ]]; then
     echo "test :3"
 
-    db_collect
+    ask_what_to_keep
 
     echo
     hr 
