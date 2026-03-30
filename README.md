@@ -8,10 +8,10 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 
 ## Chapters
 
-- [Features](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Features)
-- [Requirements](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Requirements)
-- [How to install](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#How-To-install)
-- [Troubleshooting](https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer#Troubleshooting)
+- [Features](https://github.com/dezerx-spartan/Spartan-Installer#Features)
+- [Requirements](https://github.com/dezerx-spartan/Spartan-Installer#Requirements)
+- [How to install](https://github.com/dezerx-spartan/Spartan-Installer#How-To-install)
+- [Troubleshooting](https://github.com/dezerx-spartan/Spartan-Installer#Troubleshooting)
 
 ## Features
 
@@ -53,7 +53,7 @@ The DezerX Spartan Installer is an interactive Bash script designed to automate 
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/DezerX-Brand-of-Bauer-Kuke-EDV-GBR/Spartan-Installer.git
+   git clone https://github.com/dezerx-spartan/Spartan-Installer.git
    cd Spartan-Installer
    ```
 
