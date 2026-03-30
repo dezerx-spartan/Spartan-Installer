@@ -4,7 +4,7 @@
 # Made by HdBento & Anthony S
 
 set -euo pipefail
-trap 'echo "[ERR] An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
+trap 'echo "${RED}[ERR]${NC} An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
 
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
@@ -18,21 +18,64 @@ APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
 PHP_VER="8.4"
 
+FORCE_SWAP=0
+SWAP_SIZE="1024"
+
+OPTIONS_JSON_NAME="script_options.json"
+
 ACTION=""
 ASSUME_YES=0
 SHOW_HELP=0
 NONINTERACTIVE=0
 USED_APP_DIR=0
 ENABLE_IPV6=0
+KEEP_NGINX=0
+KEEP_THEMES=1
+KEEP_PORTALS=1
+KEEP_EMAILS=1
+KEEP_FAVICON=1
+KEEP_CSS=1
 
 mkdir -p "$(dirname "$LOG")"
+exec 3>&1
+exec 4>>"$LOG"
 exec > >(tee -a "$LOG") 2>&1
 
 # -------- Pretty output helpers --------
+WHITE=$'\e[0;37m'
+GRAY=$'\e[1;30m'
+RED=$'\e[0;31m'
+GREEN=$'\e[0;32m'
+YELLOW=$'\e[1;33m'
+BLUE=$'\e[0;34m'
+PURPLE=$'\e[0;35m'
+CYAN=$'\e[0;36m'
+L_CYAN=$'\e[1;36m'
+NC=$'\e[0m'
+
+STEP_COUNTER=1
 ts() { date +"%Y-%m-%d %H:%M:%S"; }
-hr() { printf -- "---------------------------------------------------------------------\n"; }
-section() { hr; echo "[$(ts)] >>> $*"; hr; }
-cmdshow() { printf "\n$ %s\n\n" "$*"; }
+hr() { 
+    sleep 0.02
+    echo -e "${BLUE}---------------------------------------------------------------------${NC}" >&3 
+}
+section() { 
+    hr
+    echo -e "${GRAY}[$(ts)]${NC} ${WHITE}>>>${NC} ${CYAN}$*${NC}" >&3
+    echo "[$(ts)] >>> $*" >&4
+    hr
+}
+
+step() { 
+    sleep 0.02
+    echo -e "\n${BLUE}=====================================================================${NC}\n" >&3
+    echo -e "${GRAY}[$(ts)]${NC} ${WHITE}>>>${NC} ${YELLOW}STEP ${STEP_COUNTER}: $*${NC}" >&3
+    echo -e "\n${BLUE}=====================================================================${NC}\n" >&3
+    echo "[$(ts)] =============== STEP ${STEP_COUNTER}: $* ===============" >&4
+    STEP_COUNTER=$((STEP_COUNTER + 1))
+}
+cmdshow() { echo "$ $*" >&4; }
+
 run(){
     local first="$1"
     local desc cmdstr
@@ -46,16 +89,59 @@ run(){
         cmdstr="$*"
     fi
     
-    section "$desc"
-    cmdshow "$cmdstr"
-    "$@"
-    return $?
+    echo "[$(ts)] $desc" >&4
+    echo "$ $cmdstr" >&4
+    
+    local tmpout
+    tmpout=$(mktemp)
+    
+    # Run command in background
+    "$@" > "$tmpout" 2>&1 &
+    local pid=$!
+    
+    local spin='-\|/'
+    local i=0
+    
+    # Hide cursor
+    echo -ne "\033[?25l" >&3
+    
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i+1) %4 ))
+        local last_line=""
+        if [ -s "$tmpout" ]; then
+            last_line=$(tail -n 1 "$tmpout" | sed 's/\x1b\[[0-9;]*m//g' | tr -dc '[:print:]' | cut -c 1-50)
+        fi
+        
+        printf "\r\033[K${YELLOW}${spin:$i:1}${NC} %.50s | %.50s" "$desc" "$last_line" >&3
+        sleep 0.1
+    done
+    set +e
+    wait $pid
+    local extcode=$?
+    set -e
+    
+    # Show cursor
+    echo -ne "\033[?25h" >&3
+    
+    if [ $extcode -eq 0 ]; then
+        printf "\r\033[K${GREEN}✔${NC} %s\n" "$desc" >&3
+        cat "$tmpout" >&4
+    else
+        printf "\r\033[K${RED}✘${NC} %s (Failed)\n" "$desc" >&3
+        echo -e "${RED}--- Output ---${NC}" >&3
+        cat "$tmpout" >&3
+        echo -e "${RED}--------------${NC}" >&3
+        cat "$tmpout" >&4
+    fi
+    rm -f "$tmpout"
+    return $extcode
 }
 
-need_root(){ [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }; }
+need_root(){ [[ $EUID -eq 0 ]] || { echo -e "${RED}Run as root (sudo).${NC}" >&3; exit 1; }; }
 have(){ command -v "$1" >/dev/null 2>&1; }
-die(){ echo; hr; echo "ERROR: $*" >&2; echo "See log: $LOG"; hr; exit 1; }
-error(){ echo; hr; echo "ERROR: $*" >&2; echo "See log: $LOG"; hr; }
+die(){ echo >&3; hr; echo -e "${RED}ERROR:${NC} $*" >&3; echo "See log: $LOG" >&3; hr; echo "ERROR: $*" >&4; exit 1; }
+warn(){ echo >&3; hr; echo -e "${YELLOW}!\033[K Warning: $*${NC}" >&3; hr; echo "WARN: $*" >&4; }
+error(){ echo >&3; hr; echo -e "${RED}ERROR:${NC} $*" >&3; echo "See log: $LOG" >&3; hr; echo "ERROR: $*" >&4; }
 
 detect_os(){ source /etc/os-release || true; DISTRO_ID="${ID:-unknown}"; DISTRO_VER="${VERSION_ID:-}"; section "Detected OS: ${DISTRO_ID} ${DISTRO_VER}"; }
 
@@ -140,28 +226,148 @@ is_systemd() {
 start_service(){
     local svc="$1"
     
-    if is_systemd && have systemctl >/dev/null 2>&1; then
+    if is_systemd && have systemctl; then
         section "Attempting to start ${svc} via systemctl"
-        if systemctl enable --now "$svc" >/dev/null 2>&1 || systemctl start "$svc" >/dev/null 2>&1; then
+        if run "systemctl enable --now ${svc}" systemctl enable --now "$svc" || run "Using fallback (systemctl start ${svc})" systemctl start "$svc"; then
             return 0
         fi
     fi
     
-    if have rc-service >/dev/null 2>&1; then
+    if have rc-service; then
         section "Attempting to start ${svc} via rc-service"
-        if rc-service "$svc" start >/dev/null 2>&1; then
+        if run "rc-service ${svc} start" rc-service "$svc" start; then
             return 0
         fi
     fi
     
-    if have service >/dev/null 2>&1; then
+    if have service; then
         section "Attempting to start ${svc} via service"
-        if service "$svc" start >/dev/null 2>&1; then
+        if run "service ${svc} start" service "$svc" start; then
             return 0
         fi
     fi
     
     return 1
+}
+
+ensure_options_json(){
+    local f; f="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    if [[ ! -f "${f}" ]]; then
+        run "Creating ${OPTIONS_JSON_NAME}" bash -lc "cat > '${f}' <<'EOF'
+{
+    \"keep\": {
+        \"nginx\": false,
+        \"css\": true,
+        \"themes\": true,
+        \"portals\": true,
+        \"emails\": true,
+        \"favicon\": true
+    },
+    \"exclude\": {
+        \"files\": [],
+        \"folders\": []
+    },
+    \"delete\": []
+}
+EOF"
+    fi
+}
+
+load_options_json_flags(){
+    local json_file="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    [[ -f "$json_file" ]] || return 0
+
+
+    if ! jq -e . "$json_file" >/dev/null 2>&1; then
+        echo "Invalid json in ${json_file}. Skipping advanced exclusions."
+        return 0
+    fi
+
+    section "Reading keep preferences from ${OPTIONS_JSON_NAME}"
+
+    while IFS='=' read -r key val; do
+        [[ -z "$key" ]] && continue
+
+        local upper_key="${key^^}"
+
+        if [[ "$val" == "true" ]]; then
+            printf -v "KEEP_${upper_key}" "1"
+            echo "KEEP_${upper_key}=1"
+        elif [[ "$val" == "false" ]]; then
+            printf -v "KEEP_${upper_key}" "0"
+            echo "KEEP_${upper_key}=0"
+        fi
+    done < <(jq -r '.keep? | to_entries[]? | "\(.key)=\(.value)"' "$json_file")
+}
+
+process_options_json(){
+    local json_file="${APP_DIR}/${OPTIONS_JSON_NAME}"
+    [[ -f "$json_file" ]] || return 0
+
+    section "Processing exclusions from ${OPTIONS_JSON_NAME}"
+
+    if ! jq -e . "$json_file" >/dev/null 2>&1; then
+        warn "Invalid json in ${json_file}. Skipping advanced exclusions."
+        return 0
+    fi
+
+    EXCLUDE_TMPDIR=$(mktemp -d "/tmp/spartan_exclude.XXXXXX")
+    run "Saving exclusions state" cp -a "$json_file" "${EXCLUDE_TMPDIR}/${OPTIONS_JSON_NAME}"
+
+    _do_deletions() {
+        local total_items=$(jq -r '.delete | length' "$json_file" 2>/dev/null || echo 0)
+        local idx=0
+        jq -r '.delete[]? // empty' "$json_file" | while read -r item; do
+            idx=$((idx + 1))
+            item=$(echo "$item" | xargs)
+            [[ -z "$item" ]] && continue
+            good_path="${item#"$APP_DIR"}"
+            good_path="${good_path#/}"
+            good_path="${good_path%/}"
+            if [[ -z "$good_path" || "$good_path" == "." || "$good_path" == ".." || "$good_path" == *".."* ]]; then
+                continue
+            fi
+            src_path="${APP_DIR}/${good_path}"
+            if [[ "$src_path" != "$APP_DIR"/* ]]; then
+                continue
+            fi
+            if [[ -e "$src_path" ]]; then
+                rm -fr "$src_path" || true
+                echo "$idx/$total_items | deleted $good_path"
+            fi
+        done
+    }
+
+    _do_exclusions() {
+        local total_items=$(jq -r '(.exclude.files | length) + (.exclude.folders | length)' "$json_file" 2>/dev/null || echo 0)
+        local idx=0
+        jq -r '.exclude.files[]?, .exclude.folders[]? // empty' "$json_file" | while read -r item; do
+            idx=$((idx + 1))
+            item=$(echo "$item" | xargs)
+            [[ -z "$item" ]] && continue
+            good_path="${item#"$APP_DIR"}"
+            good_path="${good_path#/}"
+            good_path="${good_path%/}"
+            [[ -z "$good_path" || "$good_path" == "." || "$good_path" == ".." ]] && continue
+            src_path="${APP_DIR}/${good_path}"
+            if [[ -e "$src_path" ]]; then
+                mkdir -p "${EXCLUDE_TMPDIR}/$(dirname "$good_path")"
+                cp -a "$src_path" "${EXCLUDE_TMPDIR}/${good_path}"
+                echo "$idx/$total_items | queued $good_path"
+            fi
+        done
+    }
+
+    run "Deleting excluded options.json items" _do_deletions
+    run "Backing up excluded options.json items" _do_exclusions
+}
+
+restore_options_items(){
+    if [[ -n "${EXCLUDE_TMPDIR:-}" && -d "${EXCLUDE_TMPDIR:-}" ]]; then
+        section "Restoring items from ${OPTIONS_JSON_NAME}"
+        rsync -a --ignore-missing-args "${EXCLUDE_TMPDIR:-}/" "${APP_DIR}/"
+        [[ -n "${EXCLUDE_TMPDIR}" && "${EXCLUDE_TMPDIR}" != "/" ]] && rm -fr "${EXCLUDE_TMPDIR}" || true
+    fi
 }
 
 app_prepare_dir(){
@@ -174,89 +380,106 @@ app_prepare_dir(){
     css_save_methode=""
 
     if [[ $CHOICE == "update" ]]; then
+        process_options_json
         update_tmpdir=$(mktemp -d "${APP_DIR}/.cleanup.XXXXXX") || { echo "mktemp failed"; return 1; }
 
-        if php "${APP_DIR}/artisan" help theme:backup --no-interaction >/dev/null 2>&1; then
-            css_save_methode="php"
-        else
-            css_save_methode="fallback"
-        fi
-
-        if [[ "$css_save_methode" == "php" ]]; then
-            if ! run "Saving dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"; then
-                css_save_methode="fallback"
-                run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
-            fi
-        else
-            css_save_methode="fallback"
-            run "Saving dashboard theme (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
-        fi
-
-        if [[ -d "${APP_DIR}/resources/js/pages/Portal" ]]; then
-            portals="$(find "${APP_DIR}/resources/js/pages/Portal" -mindepth 1 -maxdepth 1 -type d ! -iname "default" -printf '.' | wc -c)"
-            if [[ "$portals" -gt 0 ]]; then
-                [[ ! -d "${update_tmpdir}/Portals" ]] && mkdir -p "${update_tmpdir}/Portals"
-                run "Saving dashboard portals" bash -lc "rsync -a --remove-source-files --exclude='Default' --exclude='default' '${APP_DIR}/resources/js/pages/Portal/' '${update_tmpdir}/Portals/' 2>/dev/null || true"
+        if [[ "$KEEP_CSS" == 1 ]]; then
+            if php "${APP_DIR}/artisan" help theme:backup --no-interaction >/dev/null 2>&1; then
+                css_save_methode="php"
             else
-                echo "No custom portals found to save - skipping"
+                css_save_methode="fallback"
             fi
-        else
-            echo "Portal source directory does not exist - skipping"
+
+            if [[ "$css_save_methode" == "php" ]]; then
+                if ! run "Saving dashboard css (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --save"; then
+                    css_save_methode="fallback"
+                    run "Saving dashboard css (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
+                fi
+            else
+                css_save_methode="fallback"
+                run "Saving dashboard css (Methode: fallback)" bash -lc "mv -- '${APP_DIR}/resources/css/' '${update_tmpdir}/' 2>/dev/null || true"
+            fi
         fi
 
-        [[ ! -d "${update_tmpdir}/favicon" ]] && mkdir -p "${update_tmpdir}/favicon"
-        rsync -a --remove-source-files --ignore-missing-args \
-            "${APP_DIR}/public/favicon.ico" \
-            "${APP_DIR}/public/favicon.svg" \
-            "${update_tmpdir}/favicon/" 2>/dev/null || true
-        rsync -a --remove-source-files --ignore-missing-args \
+        if [[ "$KEEP_THEMES" == 1 ]]; then
+            run "Saving themes" bash -lc "rsync -a --remove-source-files --ignore-missing-args '${APP_DIR}/resources/js/pages/theme' '${update_tmpdir}/' 2>/dev/null || true"
+        fi
+
+        if [[ "$KEEP_PORTALS" == 1 ]]; then
+            if [[ -d "${APP_DIR}/resources/js/pages/Portal" ]]; then
+                portals="$(find "${APP_DIR}/resources/js/pages/Portal" -mindepth 1 -maxdepth 1 -type d ! -iname "default" -printf '.' | wc -c)"
+                if [[ "$portals" -gt 0 ]]; then
+                    [[ ! -d "${update_tmpdir}/Portals" ]] && mkdir -p "${update_tmpdir}/Portals"
+                    run "Saving dashboard portals" bash -lc "rsync -a --remove-source-files --exclude='Default' --exclude='default' '${APP_DIR}/resources/js/pages/Portal/' '${update_tmpdir}/Portals/' 2>/dev/null || true"
+                else
+                    echo "No custom portals found to save - skipping"
+                fi
+            else
+                echo "Portal source directory does not exist - skipping"
+            fi
+        fi
+
+        if [[ "$KEEP_EMAILS" == 1 ]]; then
+            run "Saving email templates" bash -lc "rsync -a --remove-source-files --ignore-missing-args '${APP_DIR}/resources/views/emails' '${update_tmpdir}/' 2>/dev/null || true"
+        fi
+
+        if [[ "$KEEP_FAVICON" == 1 ]]; then
+            _do_save_favicon() {
+                [[ ! -d "${update_tmpdir}/favicon" ]] && mkdir -p "${update_tmpdir}/favicon"
+                rsync -a --remove-source-files --ignore-missing-args \
+                    "${APP_DIR}/public/favicon.ico" \
+                    "${APP_DIR}/public/favicon.svg" \
+                    "${update_tmpdir}/favicon/" 2>/dev/null || true
+            }
+            run "Saving favicon" _do_save_favicon
+        fi
+
+        run "Saving application core folders" rsync -a --remove-source-files --ignore-missing-args \
             "${APP_DIR}/storage" \
             "${APP_DIR}/public" \
             "${APP_DIR}/Modules" \
-            "${APP_DIR}/resources/views/emails" \
             "${APP_DIR}/modules_statuses.json" \
-            "${APP_DIR}/resources/js/pages/theme/default" \
             "${APP_DIR}/.env" \
-            "${update_tmpdir}/" 2>/dev/null || true
+            "${update_tmpdir}/"
     fi
 
-    (
+    _do_cleanup() {
         shopt -s dotglob nullglob
-        for entry in "${APP_DIR}"/*; do
+        local entries=("${APP_DIR}"/*)
+        local total=${#entries[@]}
+        local i=0
+        for entry in "${entries[@]}"; do
             [ "${entry}" = "${update_tmpdir}" ] && continue
+            i=$((i + 1))
             rm -fr -- "${entry}"
+            echo "$i/$total | removed $(basename "$entry")"
         done
-    )
+    }
+    run "Cleaning up old application directory" _do_cleanup
 
     if [[ $CHOICE == "update" ]]; then
-        rsync -aI --remove-source-files --ignore-missing-args \
-            "${update_tmpdir}/storage" \
-            "${update_tmpdir}/public" \
-            "${update_tmpdir}/Modules" \
-            "${APP_DIR}/" 2>/dev/null || true
-        mv -- "${update_tmpdir}/modules_statuses.json" "${APP_DIR}/modules_statuses.json.old" 2>/dev/null || true
-        if [[ -d "${update_tmpdir}/Portals" ]]; then
-            mkdir -p "${APP_DIR}/resources/js/pages/Portal"
-            run "Restoring dashboard portals" bash -lc "rsync -a '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
-        else
-            section "No portal backup found - nothing to restore"
+        run "Restoring application core folders" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/storage' '${update_tmpdir}/public' '${update_tmpdir}/Modules' '${APP_DIR}/' 2>/dev/null || true"
+        run "Restoring modules_statuses.json" bash -c "mv -- '${update_tmpdir}/modules_statuses.json' '${APP_DIR}/modules_statuses.json.old' 2>/dev/null || true"
+        if [[ "$KEEP_PORTALS" == 1 && -d "${update_tmpdir}/Portals" ]]; then
+            run "Ensuring dashboard portal directory exists" mkdir -p "${APP_DIR}/resources/js/pages/Portal"
+            run "Restoring dashboard portals" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
         fi
-        if [[ -d "${update_tmpdir}/default" ]]; then
-            mkdir -p "${APP_DIR}/resources/js/pages/theme/default"
-            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/default/" "${APP_DIR}/resources/js/pages/theme/default/" || true
+        if [[ "$KEEP_THEMES" == 1 && -d "${update_tmpdir}/theme" ]]; then
+            run "Ensuring themes directory exists" mkdir -p "${APP_DIR}/resources/js/pages/theme"
+            run "Restoring themes" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/default/' '${APP_DIR}/resources/js/pages/theme/default/' || true"
         fi
-        if [[ -d "${update_tmpdir}/emails" ]]; then
+        if [[ "$KEEP_EMAILS" == 1 && -d "${update_tmpdir}/emails" ]]; then
             mkdir -p "${APP_DIR}/resources/views/emails"
-            rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/emails/" "${APP_DIR}/resources/views/emails/" || true
+            run "Restoring email templates" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/emails/' '${APP_DIR}/resources/views/emails/' || true"
         fi
     fi
 }
 
 app_restore_files(){
-    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/.env" "${APP_DIR}/" 2>/dev/null || true
-    rsync -aI --remove-source-files --ignore-missing-args "${update_tmpdir}/favicon/" "${APP_DIR}/public/" 2>/dev/null || true
-    if [[ "$css_save_methode" == "fallback" ]]; then
-        run "Restoring dashboard theme (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
+    run "Restoring .env configuration" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/.env' '${APP_DIR}/' 2>/dev/null || true"
+    [[ "$KEEP_FAVICON" == 1 ]] && run "Restoring favicon files" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/favicon/' '${APP_DIR}/public/' 2>/dev/null || true"
+    if [[ "$KEEP_CSS" == 1 && "$css_save_methode" == "fallback" ]]; then
+        run "Restoring dashboard css (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
 }
@@ -340,7 +563,7 @@ no_apache(){
     }
 
     if package_installed "$pkg_name" || unit_exists "$svc_name" || unit_exists "$sock_name" 2>/dev/null; then
-        section "Found a apache cave diver, deactivating it."
+        echo "Found a apache cave diver, deactivating it."
         if unit_exists "$svc_name"; then
             run "stopping apache" systemctl stop "$svc_name" || true
             run "deactivating apache" systemctl disable "$svc_name" || true
@@ -351,17 +574,220 @@ no_apache(){
             run "deactivating apache.socket" systemctl disable "$sock_name" || true
         fi
     else
-        section "No apache cave diver found"
+        echo "No apache cave diver found"
     fi
 }
 
-# ---------------- Menüs ----------------
+rotate_backups(){
+    section "Rotating old backups (Keeping the 7 most recent of each type)"
+
+    local prefixes=(
+        "spartan_backup_"
+        "spartan_db_backup_"
+        "spartan_php_backup_"
+        "spartan_ioncube_backup_"
+        "spartan_conf_backup_"
+    )
+
+    for prefix in "${prefixes[@]}"; do
+        ls -t "${BACKUP_DIR}/${prefix}"* 2>/dev/null | tail -n +8 | xargs -r rm -f || true
+    done
+
+    echo "Old backups cleaned up."
+}
+
+setup_permanent_swap(){
+    if systemd-detect-virt -q --container 2>/dev/null || grep -qa 'container=' /proc/1/environ 2>/dev/null; then
+        section "Container environment detected. Skipping swap creation."
+        echo "Containers cannot manage kernel swap space. Please ensure your host node has adequate swap allocated."
+        return 0
+    fi
+
+    local target_mb=0
+    local mem_pad=50
+    local total_ram=0
+    
+    if [[ "${FORCE_SWAP:-0}" == 1 ]]; then
+        if [[ "$SWAP_SIZE" == *"G" || "$SWAP_SIZE" == *"g" ]]; then
+            target_mb=$((${SWAP_SIZE%[Gg]} * 1024 ))
+        elif [[ "$SWAP_SIZE" == *"M" || "$SWAP_SIZE" == *"m" ]]; then
+            target_mb=${SWAP_SIZE%[Mm]}
+        else
+            target_mb=2048
+        fi
+    else
+        total_ram=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+        target_mb=2048
+
+        if (( total_ram > target_mb )); then
+            return 0
+        fi
+    fi
+
+    local current_swap
+    current_swap=$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+    
+    if (( current_swap >= (target_mb - mem_pad) )); then
+        return 0
+    fi
+
+    if [[ "${FORCE_SWAP:-0}" == 1 ]]; then
+        section "Swap requested via flag. Target: ${target_mb}MB"
+    else
+        section "Low memory detected (${total_ram}MB)."
+    fi
+
+    echo "Current swap (${current_swap}MB) is less than required (${target_mb}MB)."
+
+    local swap_file="/swapfile"
+
+    if grep -q "$swap_file" /proc/swaps; then
+        run "Disabling old swap file" swapoff "$swap_file" || true
+    fi
+
+    if [[ -f "$swap_file" ]]; then
+        run "Removing old swap file" rm -f "$swap_file"
+    fi
+
+    run "Allocating ${target_mb}MB swap file" bash -c "fallocate -l ${target_mb}M ${swap_file} 2>/dev/null || dd if=/dev/zero of=${swap_file} bs=1M count=${target_mb} status=none"
+    run "Formatting swap file" bash -lc "chmod 600 ${swap_file} && mkswap ${swap_file}"
+    run "Enabling swap file" swapon "$swap_file"
+
+    if ! grep -q "^${swap_file}" /etc/fstab; then
+        run "Adding swap to /etc/fstab" bash -c "echo '${swap_file} none swap sw 0 0' >> /etc/fstab"
+    fi
+
+    if ! grep -q "vm.swappiness" /etc/sysctl.conf /etc/sysctl.d/* 2>/dev/null; then
+        run "Tuning swappiness to 10" bash -c "sysctl vm.swappiness=10 && echo 'vm.swappiness=10' > /etc/sysctl.d/99-spartan-swappiness.conf" || true
+    fi
+
+    echo "Swap upgraded and enabled successfully."
+}
+
+check_db_connection() {
+    section "Testing Database Connection"
+    echo -e "Testing connection to ${DB_HOST}:${DB_PORT} as user '${DB_USER}'..."
+
+    if output=$(mysql --connect-timeout=5 -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" -e "SELECT 1;" 2>&1); then
+        echo "Database connection successful!"
+        return 0
+    else
+        echo -e "CRITICAL: Could not connect to the database ${DB_NAME} at ${DB_HOST}."
+        echo "Please check your credentials and ensure the database server is running."
+
+        echo -e "\n--- Detailed MySQL Error ---"
+        echo "$output"
+        echo "----------------------------"
+        return 1
+    fi
+}
+
+showcase_colors(){
+    section "Color UI Showcase"
+    echo -e "${WHITE}White text${NC}" >&3
+    echo -e "${GRAY}Gray text${NC}" >&3
+    echo -e "${RED}Red text${NC}" >&3
+    echo -e "${GREEN}Green text${NC}" >&3
+    echo -e "${YELLOW}Yellow text${NC}" >&3
+    echo -e "${BLUE}Blue text${NC}" >&3
+    echo -e "${PURPLE}Purple text${NC}" >&3
+    echo -e "${CYAN}Cyan text${NC}" >&3
+    echo -e "${L_CYAN}Light cyan text${NC}" >&3
+    run "Simulating a fast background task" bash -c "echo 'Working...' && sleep 1"
+    run "Simulating a failing task" bash -c "echo 'Oops, something went wrong!' && exit 1" || true
+}
+
+smoke_test(){
+    section "Performing Smoke Test"
+
+    local protocol="http"
+    [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && protocol="https"
+
+    local target_url="${protocol}://127.0.0.1"
+    echo "Checking if ${target_url} is online..."
+
+    local max_attempts=3
+    local attempt=1
+    local status_code=0
+
+    while (( attempt <= max_attempts )); do
+        status_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${DOMAIN}" --insecure "${target_url}" || echo "000")
+
+        if [[ "$status_code" == "200" || "$status_code" == "301" || "$status_code" == "302" ]]; then
+            echo  "Smoke Test Passed! Website is responding (HTTP $status_code)."
+            return 0
+        fi
+
+        echo "Attempt $attempt/$max_attempts: Received HTTP $status_code. Retrying in 3 seconds..."
+        sleep 3
+        ((attempt++))
+    done
+
+    warn "Smoke Test failed.\nThe website returned HTTP $status_code instead of a success code.\nThe installation completed, but you may need to check your NGINX/Apache error logs."
+}
+
+sync_server_time(){
+    section "Synchronizing System Time (NTP)"
+
+    if systemd-detect-virt -q --container 2>/dev/null || grep -qa 'container=' /proc/1/environ 2>/dev/null; then
+        echo "Container environment detected. Skipping time synchronization."
+        echo "Note: Containers share the host's clock. If you get SSL errors, fix the host machine's time."
+        return 0
+    fi
+
+    if have timedatectl; then
+        run "Syncing time via timedatectl" timedatectl set-ntp true || true
+        echo "System time synced via systemd (timedatectl): $(date)"
+        return 0
+    fi
+
+    if have ntpdate; then
+        run "Syncing time via ntpdate" ntpdate -u pool.ntp.org || true
+        echo "Time synced via ntpdate: $(date)"
+        return 0
+    fi
+
+    if ! have chronyc; then
+        run "Installing chrony" pm_install chrony
+    fi
+    if have chronyc; then
+        local chrony_svc="chronyd"
+        [[ "$DISTRO_ID" == "debian" || "$DISTRO_ID" == "ubuntu" ]] && chrony_svc="chrony"
+
+        start_service "$chrony_svc" || true
+
+        run "Syncing time via chrony" chronyc -a makestep || true
+        echo "Time synced via chrony: $(date)"
+        return 0
+    fi
+
+    warn "No supported time synchronization tool installed/found. Current system time: $(date)"
+}
+
+# ---------------- Menus ----------------
 main_menu(){
-    CHOICE=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\n\nChoose an option:" 14 72 5 \
-        "install" "Install DezerX Spartan" \
-        "update" "Update DezerX Spartan" \
-        "get link" "Get download link of DezerX Spartan" \
-        "uninstall" "Delete DezerX Spartan" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+    while :; do
+        local input=""
+        input=$(whiptail --title "$TITLE" --menu "Welcome to the DezerX Spartan installer.\nChoose an option:\n" 14 72 4 \
+            "install" "Install DezerX Spartan" \
+            "update" "Update DezerX Spartan" \
+            "uninstall" "Delete DezerX Spartan" \
+            "debug" "Open the debug menu" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+        
+        if [[ "$input" == "debug" ]]; then
+            input=$(whiptail --title "$TITLE" --menu "DezerX Spartan installer Debug Menu.\nChoose an option:\n" 14 72 4 \
+                "setup perms" "Apply permissions on a installation" \
+                "upload logs" "Upload logs" \
+                "back" "Go back to the main menu" 3>&1 1>&2 2>&3) || { echo "Operation cancelled."; exit 0; }
+        fi
+        if [[ "$input" == "upload logs" ]]; then
+            whiptail --title "$TITLE" --msgbox "I couldn't find a secure platform where to send the logs, so this function doesn't work for now." 8 50
+            continue
+        fi
+        [[ "$input" == "debug" || "$input" == "back" ]] && continue
+        CHOICE="$input"
+        break
+    done
 }
 
 ask_domain(){
@@ -464,10 +890,20 @@ db_collect(){
 
 mysql_exec(){
     local SQL="$1"
-    if mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1; then mysql --protocol=socket -uroot -e "$SQL"; return $?; fi
-    if mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then mysql -uroot -e "$SQL"; return $?; fi
-    local ROOTPW; ROOTPW=$(whiptail --title "$TITLE" --passwordbox "Enter MySQL/MariaDB root password" 10 70 3>&1 1>&2 2>&3) || return 1
-    mysql -uroot -p"${ROOTPW}" -e "$SQL"
+    local ROOTPW="${2:-}"
+    if mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1; then
+        mysql --protocol=socket -uroot -e "$SQL"
+        return $?
+    fi
+    if mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then
+        mysql -uroot -e "$SQL"
+        return $?
+    fi
+    if [[ -n "$ROOTPW" ]]; then
+        mysql -uroot -p"${ROOTPW}" -e "$SQL"
+        return $?
+    fi
+    return 1
 }
 
 db_create(){
@@ -478,8 +914,11 @@ db_create(){
     CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST}' IDENTIFIED BY '${SQL_PASS}';
     GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${DB_HOST}' WITH GRANT OPTION;
     FLUSH PRIVILEGES;"
-    section "Create database & user"
-    mysql_exec "$SQL" || die "Failed to create database/user. Check root access."
+    local ROOTPW=""
+    if ! mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1 && mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then
+        [[ "$NONINTERACTIVE" == "0" ]] && ROOTPW=$(whiptail --title "$TITLE" --passwordbox "Enter MySQL/MariaDB root password" 10 70 3>&1 1>&2 2>&3) || return 1
+    fi
+    run "Create database & user" mysql_exec "$SQL" "$ROOTPW" || die "Failed to create database/user. Check root access."
 }
 
 # ---------------- Package Ops ----------------
@@ -494,7 +933,7 @@ enable_php_repo_and_update(){
                 run "Cleaning up deb file" rm -f "/tmp/debsuryorg-archive-keyring.deb"
             fi
 
-            if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list"; then
+            if ! grep -q "^deb .*packages.sury.org/php/ $(lsb_release -sc)" "/etc/apt/sources.list.d/php.list" >/dev/null 2>&1; then
                 run "Adding sury repo" bash -c "echo \"deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main\" > /etc/apt/sources.list.d/php.list"
             fi
             run "Updating apt repositories" apt-get update
@@ -508,25 +947,37 @@ enable_php_repo_and_update(){
         ;;
         fedora)
             pm_install dnf-plugins-core
-            local MODULE_NAME="php"
-            if dnf module list php | grep -q "$PHP_VER"; then
-                MODULE_NAME="php:${PHP_VER}"
+            if dnf module list php >/dev/null 2>&1; then
+                local MODULE_NAME="php"
+                if dnf module list php 2>/dev/null | grep -q "remi-${PHP_VER}"; then
+                    MODULE_NAME="php:remi-${PHP_VER}"
+                elif dnf module list php 2>/dev/null | grep -Ewq "^php\s+${PHP_VER}"; then
+                    MODULE_NAME="php:${PHP_VER}"
+                else
+                    pm_install "Installing remi repo" "https://rpms.remirepo.net/fedora/remi-release-$(rpm -E %fedora).rpm" || true
+                    MODULE_NAME="php:remi-${PHP_VER}"
+                fi
+                run "dnf module reset php" dnf -y module reset php || true
+                run "dnf module enable ${MODULE_NAME}" dnf -y module enable "${MODULE_NAME}" || true
             else
                 pm_install "Installing remi repo" "https://rpms.remirepo.net/fedora/remi-release-$(rpm -E %fedora).rpm" || true
-                MODULE_NAME="php:remi-${PHP_VER}"
+                if dnf module list php 2>/dev/null | grep -q "remi-${PHP_VER}"; then
+                    run "dnf module reset php" dnf -y module reset php || true
+                    run "dnf module enable php:remi-${PHP_VER}" dnf -y module enable "php:remi-${PHP_VER}" || true
+                fi
             fi
-            run "dnf module reset php" dnf -y module reset php || true
-            run "dnf module enable ${MODULE_NAME}" dnf -y module enable "${MODULE_NAME}" || true
         ;;
         centos|rhel|almalinux|rocky)
             pm_install dnf-plugins-core epel-release || true
             if have dnf; then
                 pm_install "Installing Remi repo" "https://rpms.remirepo.net/enterprise/remi-release-$(rpm -E %rhel).rpm" || true
-                run "dnf module reset php" dnf -y module reset php || true
-                if dnf module list php | grep -q "remi-${PHP_VER}"; then
-                    run "dnf module enable php:remi-${PHP_VER}" dnf -y module enable php:remi-${PHP_VER} || true
-                else
-                    error "PHP ${PHP_VER} not found in remi repo."
+                if dnf module list php >/dev/null 2>&1; then
+                    run "dnf module reset php" dnf -y module reset php || true
+                    if dnf module list php 2>/dev/null | grep -q "remi-${PHP_VER}"; then
+                        run "dnf module enable php:remi-${PHP_VER}" dnf -y module enable "php:remi-${PHP_VER}" || true
+                    else
+                        error "PHP ${PHP_VER} not found in remi repo."
+                    fi
                 fi
             fi
         ;;
@@ -557,30 +1008,31 @@ install_nodejs_lts(){
     case "$DISTRO_ID" in
         debian|ubuntu)
             run "Setup NodeSource LTS" bash -lc "curl -fsSL https://deb.nodesource.com/setup_lts.x -o /tmp/nodesource.sh && bash /tmp/nodesource.sh"
-            pm_install nodejs
+            pm_install "Installing/Updating Node.js" nodejs
         ;;
-        fedora)
-            run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
-            pm_install nodejs || { run "Enable nodejs:lts module" dnf -y module enable nodejs:lts; pm_install nodejs; } || true
-        ;;
-        centos|rhel|almalinux|rocky)
+        fedora|centos|rhel|almalinux|rocky)
             run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
             if have dnf; then 
-                pm_install nodejs || { run "Enable nodejs:18" dnf -y module enable nodejs:18; pm_install nodejs; } || true
+                if dnf module list nodejs >/dev/null 2>&1 | grep -qi "^nodejs"; then
+                    run "Resetting Node.js DNF module" dnf module reset nodejs -y || true
+                fi
+                run "Installing/Updating Node.js" dnf install -y nodejs
             else 
-                pm_install nodejs || true
+                pm_install "Installing/Updating Node.js" nodejs || true
             fi
         ;;
-        *) pm_install nodejs || true ;;
+        *) pm_install "Installing/Updating Node.js" nodejs || true
+        ;;
     esac
     have npm || pm_install npm || true
+    echo "Node.js version: $(node -v)"
 }
 
 install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu)
-                run "Adding nginx signing key" curl -SL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+                run "Adding nginx signing key" bash -c "curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null"
                 run "Using nginx mainline packages as default" bash -lc "cat > '/etc/apt/sources.list.d/nginx.list' <<'EOF'
 deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx
 EOF"
@@ -638,7 +1090,12 @@ EOF"
 install_db_engine(){
     if [[ "$DB_ENGINE" == "mariadb" ]]; then
         case "$DISTRO_ID" in
-            debian|ubuntu|fedora|centos|rhel|almalinux|rocky) pm_install mariadb-server mariadb-client || pm_install mariadb-server ;;
+            debian|ubuntu)
+                pm_install mariadb-server mariadb-client || pm_install "Installing: mariadb-server (fallback)" mariadb-server
+                ;;
+            fedora|centos|rhel|almalinux|rocky)
+                pm_install mariadb-server mariadb || pm_install "(fallback) Only Installing Server: mariadb-server" mariadb-server 
+                ;;
         esac
         run "Enable/start MariaDB" bash -lc "systemctl enable --now mariadb || systemctl enable --now mariadb.service || true"
     else
@@ -652,34 +1109,34 @@ install_db_engine(){
 }
 
 install_composer(){
-    if have composer >/dev/null 2>&1; then
-        section "Composer already installed. $(command -v composer)"
+    if have composer; then
+        echo "Composer already installed: $(command -v composer)"
         return 0
     fi
-    
+
     run "Install composer" bash -lc "curl -fsSL https://getcomposer.org/composer-stable.phar -o /usr/local/bin/composer"
     run "Making composer executable" bash -lc "chmod +x /usr/local/bin/composer || true"
-    
+
     if [[ ! -e "/usr/bin/composer" ]]; then
         run "Creating a symlink from /usr/local/bin/composer -> /usr/bin/composer" ln -sf /usr/local/bin/composer /usr/bin/composer || true
     fi
-    
-    if have composer >/dev/null 2>&1; then
-        section "Composer installed. $(command -v composer)"
+
+    if have composer; then
+        echo "Composer installed: $(command -v composer)"
         return 0
     fi
-    
+
     # Fallback to the installer
     local temp_installer
     temp_installer="$(mktemp)"
-    
+
     run "Downloading composer installer." bash -lc "curl -fsSL https://getcomposer.org/installer -o '${temp_installer}'"
     run "Running composer installer" bash -lc "php '${temp_installer}' --install-dir=/usr/local/bin --filename=composer"
-    
+
     rm -f "${temp_installer}" || true
-    
-    if have composer >/dev/null 2>&1; then
-        section "Composer installed. $(command -v composer)"
+
+    if have composer; then
+        echo "Composer installed: $(command -v composer)"
         return 0
     fi
     
@@ -765,52 +1222,34 @@ license_verify(){
     [[ -n "$PDOMAIN" ]] && echo "Registered domain: $PDOMAIN" || true
 }
 
-request_downlaod_link(){
-    local API="https://market.dezerx.com/api/license/download"
-    local TMPDIR; TMPDIR="$(mktemp -d)"
-    local RESP_FILE="$TMPDIR/resp.json"
-    local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
-
-    section "Request one-time download link (POST)"
-    cmdshow "curl -fsS -X POST '${API}' -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}'"
-
-    local CODE
-    if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
-        CODE=$(curl -4 -sS -X POST "$API" \
-            -H "Authorization: Bearer ${LICENSE_KEY}" \
-            -H "X-Domain: ${DOMAIN}" \
-            -H "X-Product-ID: ${PRODUCT_ID}" \
-            -H "Content-Type: application/json" \
-        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
-    else
-        CODE=$(curl -sS -X POST "$API" \
-            -H "Authorization: Bearer ${LICENSE_KEY}" \
-            -H "X-Domain: ${DOMAIN}" \
-            -H "X-Product-ID: ${PRODUCT_ID}" \
-            -H "Content-Type: application/json" \
-        -o "$RESP_FILE" -w '%{http_code}') || CODE=0
-    fi
-
-    [[ "$CODE" =~ ^2 ]] || { echo "API response:"; cat "$RESP_FILE" 2>/dev/null || true; error "Download-token API returned HTTP ${CODE}."; return 1; }
-
-    local SUCCESS URL EXPIRES NAME SIZE MSG
-    SUCCESS=$(jq -r '.success // false' "$RESP_FILE") || SUCCESS=false
-    MSG=$(jq -r '.message // empty' "$RESP_FILE")
-    URL=$(jq -r '.data.download_url // empty' "$RESP_FILE")
-    EXPIRES=$(jq -r '.data.expires_at // empty' "$RESP_FILE")
-    NAME=$(jq -r '.data.product_name // empty' "$RESP_FILE")
-    SIZE=$(jq -r '.data.file_size // empty' "$RESP_FILE")
-
-    [[ "$SUCCESS" == "true" && -n "$URL" ]] || { echo "API response:"; cat "$RESP_FILE"; error "No valid download_url in response: ${MSG:-Unknown}"; return 1; }
-
-    section "License OK"
-    echo -e "\nDownload URL (one-time): $URL"
-    [[ -n "$NAME" ]] && echo -e  "Product: $NAME"
-    [[ -n "$EXPIRES" ]] && echo -e "Expires on: $EXPIRES"
-    [[ -n "$SIZE" ]] && echo -e "File size: $SIZE bytes\n"
-
+ask_what_to_keep(){
+    load_options_json_flags
     if [[ "$NONINTERACTIVE" == 0 ]]; then
-        whiptail --title "$TITLE" --msgbox "One-time download link:\n\n${URL}\n\nExpires on: ${EXPIRES:-Unknown}" 12 78
+        local s_nginx="OFF" s_css="ON" s_themes="ON" s_portals="ON" s_emails="ON" s_favicon="ON"
+        [[ "${KEEP_NGINX:-}" == 1 ]] && s_nginx="ON"
+        [[ "${KEEP_CSS:-}" == 1 ]] && s_css="ON"
+        [[ "${KEEP_THEMES:-}" == 1 ]] && s_themes="ON"
+        [[ "${KEEP_PORTALS:-}" == 1 ]] && s_portals="ON"
+        [[ "${KEEP_EMAILS:-}" == 1 ]] && s_emails="ON"
+        [[ "${KEEP_FAVICON:-}" == 1 ]] && s_favicon="ON"
+
+        local choices
+        choices=$(whiptail --title "$TITLE" --checklist \
+        "Select components to KEEP during the update (Space to toggle):\n(Advanced exclusions can be set in ${OPTIONS_JSON_NAME})" 16 75 6 \
+        "NGINX" "Keep current NGINX configuration" $s_nginx \
+        "CSS" "Keep custom dashboard CSS" $s_css \
+        "THEMES" "Keep custom dashboard themes" $s_themes \
+        "PORTALS" "Keep custom portals" $s_portals \
+        "EMAILS" "Keep custom email templates" $s_emails \
+        "FAVICON" "Keep custom favicons" $s_favicon 3>&1 1>&2 2>&3) || true
+
+        KEEP_NGINX=0; KEEP_CSS=0; KEEP_THEMES=0; KEEP_PORTALS=0; KEEP_EMAILS=0; KEEP_FAVICON=0
+        [[ $choices == *"\"NGINX\""* ]] && KEEP_NGINX=1 || true
+        [[ $choices == *"\"CSS\""* ]] && KEEP_CSS=1 || true
+        [[ $choices == *"\"THEMES\""* ]] && KEEP_THEMES=1 || true
+        [[ $choices == *"\"PORTALS\""* ]] && KEEP_PORTALS=1 || true
+        [[ $choices == *"\"EMAILS\""* ]] && KEEP_EMAILS=1 || true
+        [[ $choices == *"\"FAVICON\""* ]] && KEEP_FAVICON=1 || true
     fi
 }
 
@@ -867,9 +1306,9 @@ license_download_and_extract(){
     local FILE="$(find "$OUT" -maxdepth 1 -type f -print -quit)" 
     local EXT="$(file -b "$FILE")"
     local TYPE
-    if ${EXT} | grep -qi "zip"; then
+    if echo "${EXT}" | grep -qi "zip"; then
         TYPE="zip"
-    elif ${EXT} | grep -Eiq "gzip|tar"; then
+    elif echo "${EXT}" | grep -Eiq "gzip|tar"; then
         TYPE="targz"
     else
         case "$FILE" in
@@ -888,7 +1327,7 @@ license_download_and_extract(){
     if [[ "$TYPE" == "zip" ]]; then
         unzip -q "${FILE}" -d "$EXTRACT"
     else
-        tar -xzf "${FILE}" -C "$EXTRACT"
+        run "Extracting tar archive" tar -xzf "${FILE}" -C "$EXTRACT"
     fi
     
     local SRC="$EXTRACT"
@@ -900,7 +1339,7 @@ license_download_and_extract(){
     
     app_prepare_dir
     section "Sync application to ${APP_DIR}"
-    rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
+    run "Deploying extracted files to core" rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
 
     if [[ $CHOICE == "update" ]]; then
         app_restore_files
@@ -924,9 +1363,11 @@ restart_php_fpm(){
     if [[ -n "$svc" ]]; then run "Restart ${svc}" systemctl restart "$svc" || true; else run "Restart php-fpm (generic)" systemctl restart php-fpm || true; fi
 }
 php_fpm_socket(){
+    shopt -s nullglob
     for s in /run/php/php"$(php_minor)"-fpm.sock /run/php/php*-fpm.sock /var/run/php/php*-fpm.sock /run/php/php-fpm.sock /var/run/php/php-fpm.sock /run/php-fpm/www.sock; do
         [[ -S "$s" ]] && { echo "unix:$s"; return 0; }
     done
+    shopt -u nullglob
     echo "unix:/run/php/php-fpm.sock"
 }
 php_fpm_find_conf(){
@@ -1005,13 +1446,16 @@ prepare_ioncube(){
 
     [[ ! -d $IONCUBE_DIR ]] && run "Ensuring ionCube dir exists" bash -lc "install -d '$IONCUBE_DIR'"
 
-    if [[ "$(printf '%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -n1)" != "$CUR_VER" ]]; then
+    if [[ "$CUR_VER" == "0" || -z "$CUR_VER" ]]; then
+        echo "IonCube is not installed. Installing version $NEW_VER..."
+        run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
+    elif [[ "$(printf '%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -n1)" != "$CUR_VER" ]]; then
         echo "Updating IonCube loader from $CUR_VER -> $NEW_VER"
         run "Uninstalling all old INI files" bash -lc "find /etc/php* -type f -name '*ioncube*.ini' -exec rm -f {} +"
         run "Uninstalling all old IonCube loader" bash -lc "rm -f /usr/local/ioncube/ioncube_loader_lin_*.so"
         run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
     else
-        run "Installing ionCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
+        echo "IonCube loader is up to date ($CUR_VER). Skipping file copy."
     fi
 
 
@@ -1199,7 +1643,7 @@ detect_web_user_group(){
     local user="" group="" proc_user pid candidates conf_file detection_method=""
     APP_USER="$APP_USER_DEFAULT"; APP_GROUP="$APP_GROUP_DEFAULT"
 
-    if [[ "$WEB" == "nginx" ]]; then
+    if [[ "${WEB:-}" == "nginx" ]]; then
         conf_file=(/etc/nginx/nginx.conf)
         for cfg in "${conf_file[@]}"; do
             [[ -f "$cfg" ]] || continue
@@ -1225,7 +1669,7 @@ detect_web_user_group(){
         done
     fi
 
-    if [[ "$WEB" == "nginx" ]]; then
+    if [[ "${WEB:-}" == "nginx" ]]; then
         candidates=(www-data nginx www)
     else
         candidates=(apache2 httpd apache)
@@ -1329,11 +1773,11 @@ EOF"
 }
 
 config_network() {
-    section "Network Configuration"
     if [[ ${ENABLE_IPV6-} -eq 0 ]]; then
-        echo "Configuring Network: Disabling IPv6"
 
         if [[ ! -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            section "Network Configuration"
+            echo "Configuring Network: Disabling IPv6"
             run "Writting sysctl config to disabled IPv6" bash -c "cat > '/etc/sysctl.d/99-spartan-disable-ipv6.conf' <<EOF
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -1342,11 +1786,14 @@ EOF"
             run "Applying sysctl changes (IPV6 config)" sysctl -p "/etc/sysctl.d/99-spartan-disable-ipv6.conf" || true
         fi
     else
-        echo "Skipping IPv6 Network Configuration"
+        section "Network Configuration"
 
         if [[ -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf" ]]; then
+            echo "Removing IPv6 Network Configuration"
             run "Removing sysctl IPv6 config" rm -f "/etc/sysctl.d/99-spartan-disable-ipv6.conf"
             run "Applying sysctl changes (IPV6 config deletition)" sysctl --system || true
+        else
+            echo "Skipping IPv6 Network Configuration"
         fi
 
     fi
@@ -1367,16 +1814,14 @@ env_write_value(){
 
     [[ ! -f "$env_file" ]] && touch "$env_file"
 
-    section "Writing to .env"
-
     if grep -qE "^${key}=" "$env_file"; then
-        echo -e "Updating ${key}"
+        echo "[env] Updating ${key}" >&4
         local sed_formatted="${formatted//\\/\\\\}"
         sed_formatted="${sed_formatted//&/\\&}"
         sed_formatted="${sed_formatted//|/\\|}"
         sed -i -E "s|^${key}=.*|${sed_formatted}|g" "$env_file"
     else
-        echo -e "Adding ${key}"
+        echo "[env] Adding ${key}" >&4
         printf '%s\n' "$formatted" >> "$env_file"
     fi
 }
@@ -1410,11 +1855,90 @@ app_env_setup(){
     env_write_value "DB_PASSWORD" "${DB_PASS}"
 }
 
+safe_npm_build(){
+    [[ -f "${APP_DIR}/package.json" ]] || return
+
+    section "Analyzing system memory for npm run build"
+
+    local total_ram total_swap
+    total_ram=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+    total_swap=$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+
+    local current_total=$((total_ram + total_swap))
+
+    local target_memory=4096
+    local os_overhead=512
+
+    local swap_needed=0
+    local swap_file="/swapfile_spartan_temp"
+    local swap_added=0
+
+    echo "Detected Memory: ${total_ram}MB RAM + ${total_swap}MB Swap (Total: ${current_total}MB)"
+
+    if (( $current_total < $target_memory )); then
+        swap_needed=$((target_memory - current_total + os_overhead))
+        echo "System falls short of targeted ${target_memory}MB required memory. Need ${swap_needed}MB additional memory."
+
+        if systemd-detect-virt -q --container 2>/dev/null || grep -qa 'container=' /proc/1/environ 2>/dev/null; then
+            echo "Container environment detected. Cannot dynamically allocate temporary swap."
+            echo "NPM build will attempt to run with existing memory limits, but may fail if resources are exhausted."
+        else
+            section "Creating temporary ${swap_needed}MB of swap space"
+
+            if ! swapon --show | grep -q "$swap_file"; then
+                run "Allocating swap file" dd if=/dev/zero of="$swap_file" bs=1M count="$swap_needed" status=none
+                chmod 600 "$swap_file"
+                mkswap "$swap_file" >/dev/null 2>&1
+                if swapon "$swap_file" >/dev/null 2>&1; then
+                    swap_added=1
+                    echo "Temporary swap enabled."
+                    current_total=$((current_total + swap_needed))
+                else
+                    echo "Failed to enable temporary swap. Proceeding with available memory."
+                fi
+            fi
+        fi
+    else
+        echo "Memory is sufficient. No temporary swap needed."
+    fi
+
+    local node_max_mem=$((current_total - os_overhead))
+
+    if (( node_max_mem <= 512 )); then
+        node_max_mem=512
+    fi
+    if (( node_max_mem > 8192 )); then
+        node_max_mem=8192
+    fi
+
+    section "Building assets (NODE_OPTIONS='--max-old-space-size=${node_max_mem}')"
+
+    local build_status=0
+    run "npm run build (this could take some time)" bash -lc "cd '${APP_DIR}' && NODE_OPTIONS='--max-old-space-size=${node_max_mem}' npm run build" || build_status=$?
+
+    if [[ $swap_added -eq 1 ]]; then
+        echo "Removing temporary swap file..."
+        swapoff "$swap_file" >/dev/null 2>&1 || true
+        rm -f "$swap_file"
+    fi
+
+    if [[ $build_status -eq 0 ]]; then
+        echo "npm run build succeeded!"
+    else
+        echo "npm run build failed (Exit Code: $build_status)."
+        return 1
+    fi
+}
+
 app_install_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    if [[ -f "${APP_DIR}/package-lock.json" ]]; then
+        run "npm ci (this could take some time)" bash -lc "cd '${APP_DIR}' && npm ci"
+    elif [[ -f "${APP_DIR}/package.json" ]]; then
+        run "npm install (this could take some time)" bash -lc "cd '${APP_DIR}' && npm install"
+    fi
+    safe_npm_build
     app_maintenance_on
     run "php artisan key:generate" bash -lc "cd '${APP_DIR}' && php artisan key:generate --force"
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
@@ -1425,24 +1949,30 @@ app_install_steps(){
 app_update_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    if [[ -f "${APP_DIR}/package-lock.json" ]]; then
+        run "npm ci (this could take some time)" bash -lc "cd '${APP_DIR}' && npm ci"
+    elif [[ -f "${APP_DIR}/package.json" ]]; then
+        run "npm install (this could take some time)" bash -lc "cd '${APP_DIR}' && npm install"
+    fi
     app_maintenance_on
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan db:seed --force" bash -lc "cd '${APP_DIR}' && php artisan db:seed --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
     if [[ "$css_save_methode" == "php" ]]; then
         run "Restoring dashboard theme (Methode: php)" bash -lc "cd '${APP_DIR}' && php artisan theme:backup --restore"
-        run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
     fi
-    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+    safe_npm_build
 }
 
 app_restore_steps(){
     COMPOSER_CMD="$(command -v composer || echo 'php /usr/local/bin/composer')"
     [[ -f "${APP_DIR}/composer.json" ]] && run "composer install" bash -lc "cd '${APP_DIR}' && COMPOSER_ALLOW_SUPERUSER=1 '${COMPOSER_CMD}' install --no-dev --optimize-autoloader -n --prefer-dist"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm install" bash -lc "cd '${APP_DIR}' && npm install"
-    [[ -f "${APP_DIR}/package.json"  ]] && run "npm run build" bash -lc "cd '${APP_DIR}' && npm run build"
+    if [[ -f "${APP_DIR}/package-lock.json" ]]; then
+        run "npm ci (this could take some time)" bash -lc "cd '${APP_DIR}' && npm ci"
+    elif [[ -f "${APP_DIR}/package.json" ]]; then
+        run "npm install (this could take some time)" bash -lc "cd '${APP_DIR}' && npm install"
+    fi
+    safe_npm_build
     run "php artisan migrate --force" bash -lc "cd '${APP_DIR}' && php artisan migrate --force"
     run "php artisan storage:link" bash -lc "cd '${APP_DIR}' && php artisan storage:link"
 }
@@ -1477,7 +2007,7 @@ setup_cron(){
     local escaped_app_dir=$(printf '%s\n' "${APP_DIR}" | sed 's/[][\.*^$(){}?+|/]/\\&/g')
     local match_regex="cd ${escaped_app_dir} .*artisan schedule:run"
     ensure_cron_running
-    if have crontab >/dev/null 2>&1; then
+    if have crontab; then
         local tmp_file=$(mktemp)
         run "Install cron for scheduler" bash -lc "
             (crontab -l 2>/dev/null || true) | sed '\\|${match_regex}|d' > \"${tmp_file}\"
@@ -1568,11 +2098,10 @@ create_self_signed_certs(){
     fi
 }
 
-# ---- HTTPS flip after certbot ----
+# HTTPS flip
 flip_app_url_to_https(){
     if [[ -f "${APP_DIR}/.env" ]]; then
-        section "Flip APP_URL to https://${DOMAIN}"
-        sed -i "s|^APP_URL=.*|APP_URL=https://${DOMAIN}|g" "${APP_DIR}/.env" || true
+        run "Flip APP_URL to https://${DOMAIN}" sed -i "s|^APP_URL=.*|APP_URL=https://${DOMAIN}|g" "${APP_DIR}/.env" || true
         if [[ -f "${APP_DIR}/artisan" ]]; then
             run "artisan config:clear" bash -lc "cd '${APP_DIR}' && php artisan config:clear || true"
             run "artisan config:cache" bash -lc "cd '${APP_DIR}' && php artisan config:cache || true"
@@ -1607,7 +2136,7 @@ create_ioncube_backup() {
     fi
 
     if [[ -s "$listf" ]]; then
-        sed 's#^/##' "$listf" | tar -czf "$IONCUBE_BACKUP_FILE" -C / -T - || die "Failed to create ioncube backup." 
+        run "Creating ioncube backup" bash -c "sed 's#^/##' "$listf" | tar -czf "$IONCUBE_BACKUP_FILE" -C / -T -" || die "Failed to create ioncube backup." 
         echo "Backup created at: $IONCUBE_BACKUP_FILE" | tee -a "$LOG"
         rm -f "$listf"
     else
@@ -1627,7 +2156,7 @@ create_php_backup() {
     find /etc/php* -type f -name '*ioncube*.ini' -print 2>/dev/null >> "$listf" || true
 
     if [[ -s "$listf" ]]; then
-        sed 's#^/##' "$listf" | tar -czf "$PHP_BACKUP_FILE" -C / -T - || die "Failed to create php backup."
+        run "Creating PHP config backup" bash -c "sed 's#^/##' '$listf' | tar -czf '$PHP_BACKUP_FILE' -C / -T -" || die "Failed to create php backup."
         echo "Backup created at: $PHP_BACKUP_FILE" | tee -a "$LOG"
         rm -f "$listf"
     else
@@ -1641,11 +2170,11 @@ create_nginx_backup() {
     
     section "Creating a backup of spartan nginx config at ${NGINX_BACKUP_FILE}"
     if [[ -f "$NGINX_CONF_OLD_PATH" ]]; then
-        cp "$NGINX_CONF_OLD_PATH" "$NGINX_BACKUP_FILE"
+        run "Backing up nginx config old path" cp "$NGINX_CONF_OLD_PATH" "$NGINX_BACKUP_FILE"
         NGINX_RESTORE_PATH="$NGINX_CONF_OLD_PATH"
         echo "Backup created at: ${NGINX_BACKUP_FILE}"
     elif [[ -f "$NGINX_CONF_PATH" ]]; then
-        cp "$NGINX_CONF_PATH" "$NGINX_BACKUP_FILE"
+        run "Backing up nginx config" cp "$NGINX_CONF_PATH" "$NGINX_BACKUP_FILE"
         NGINX_RESTORE_PATH="$NGINX_CONF_PATH"
         echo "Backup created at: ${NGINX_BACKUP_FILE}"
     fi
@@ -1657,7 +2186,7 @@ create_app_backup() {
     APP_BACKUP_FILE="${backup_path}.tar.gz"
     
     section "Creating backup of ${APP_DIR} at ${APP_BACKUP_FILE}"
-    tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" --exclude="$(basename "$APP_DIR")/node_modules" "$(basename "$APP_DIR")" || die "Failed to create backup."
+    run "Archiving application directory" tar -czf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" --exclude="$(basename "$APP_DIR")/node_modules" "$(basename "$APP_DIR")" || die "Failed to create backup."
     echo "Backup created at: $APP_BACKUP_FILE" | tee -a "$LOG"
 }
 
@@ -1667,7 +2196,7 @@ create_db_backup() {
         DB_BACKUP_FILE="${backup_path}.sql.gz"
         
         section "Creating database backup at ${DB_BACKUP_FILE}"
-        mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" | gzip > "$DB_BACKUP_FILE" || die "Failed to create database backup."
+        run "Dumping database" bash -c "mysqldump -h '$DB_HOST' -P '$DB_PORT' -u '$DB_USER' -p'$DB_PASS' '$DB_NAME' | gzip > '$DB_BACKUP_FILE'" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
     else
         echo "Database backup skipped: Unsupported DB engine ${DB_ENGINE}" | tee -a "$LOG"
@@ -1686,7 +2215,7 @@ create_backups(){
 restore_ioncube_backup() {
     if [[ -n "${IONCUBE_BACKUP_FILE:-}" && -f "$IONCUBE_BACKUP_FILE" ]]; then
         section "Restoring IonCube from ${IONCUBE_BACKUP_FILE}"
-        tar -xzf "$IONCUBE_BACKUP_FILE" -C / || die "Failed to restore IonCube backup."
+        run "Extracting IonCube backup" tar -xzf "$IONCUBE_BACKUP_FILE" -C / || echo "Failed to restore IonCube backup."
         echo "IonCube backup restored." | tee -a "$LOG"
     else
         echo "No IonCube backup file to restore."
@@ -1695,9 +2224,9 @@ restore_ioncube_backup() {
 
 restore_php_backup() {
     if [[ -n "${PHP_BACKUP_FILE:-}" && -f "$PHP_BACKUP_FILE" ]]; then
-        section "Restoring IonCube from ${PHP_BACKUP_FILE}"
-        tar -xzf "$PHP_BACKUP_FILE" -C / || die "Failed to restore PHP backup."
-        echo "PHP backup restored" | tee -a "$LOG"
+        section "Restoring PHP config from ${PHP_BACKUP_FILE}"
+        run "Extracting PHP config backup" tar -xzf "$PHP_BACKUP_FILE" -C / || echo "Failed to restore PHP backup."
+        echo "PHP config backup restored" | tee -a "$LOG"
     else
         echo "No PHP backup file to restore." | tee -a "$LOG"
     fi
@@ -1707,11 +2236,11 @@ restore_nginx_backup() {
     if [[ -n "${NGINX_BACKUP_FILE}" && -f "${NGINX_BACKUP_FILE}" && -n "${NGINX_CONF_PATH}" ]]; then
         section "Restoring spartan nginx config from ${NGINX_BACKUP_FILE}"
 
-        cp "$NGINX_BACKUP_FILE" "$NGINX_RESTORE_PATH"
+        run "Copying nginx backup config" cp "$NGINX_BACKUP_FILE" "$NGINX_RESTORE_PATH"
 
         if [[ "${NGINX_MODE:-}" == "debian" ]]; then
             local filename; filename=$(basename "$NGINX_RESTORE_PATH")
-            ln -sf "$NGINX_RESTORE_PATH" "/etc/nginx/sites-enabled/${filename}"
+            run "Linking nginx config to sites-enabled" ln -sf "$NGINX_RESTORE_PATH" "/etc/nginx/sites-enabled/${filename}"
         fi
         echo "Nginx backup restored."
     else
@@ -1721,11 +2250,11 @@ restore_nginx_backup() {
 
 restore_app_backup() {
     if [[ -n "${APP_BACKUP_FILE:-}" && -f "$APP_BACKUP_FILE" ]]; then
-        section "Restoring backup from ${APP_BACKUP_FILE}"
+        section "Restoring application backup from ${APP_BACKUP_FILE}"
         find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} + || true
         [[ -d "$APP_DIR" ]] || mkdir -p "$APP_DIR"
-        tar -xzf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" || die "Failed to restore backup."
-        echo "Backup restored successfully." | tee -a "$LOG"
+        run "Extracting application backup" tar -xzf "$APP_BACKUP_FILE" -C "$(dirname "$APP_DIR")" || echo "Failed to restore app backup."
+        echo "App backup restored successfully." | tee -a "$LOG"
     else
         echo "No app backup file found to restore." | tee -a "$LOG"
     fi
@@ -1735,7 +2264,7 @@ restore_db_backup() {
     if [[ -n "$DB_BACKUP_FILE" && -f "$DB_BACKUP_FILE" ]]; then
         if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
             section "Restoring database backup from ${DB_BACKUP_FILE}"
-            gunzip < "$DB_BACKUP_FILE" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" || die "Failed to restore database backup."
+            run "Importing database dump" bash -c "gunzip < '$DB_BACKUP_FILE' | mysql -h '$DB_HOST' -P '$DB_PORT' -u '$DB_USER' -p'$DB_PASS' '$DB_NAME'" || echo "Failed to restore database backup."
             echo "Database backup restored successfully." | tee -a "$LOG"
         else
             echo "Unsupported database engine: ${DB_ENGINE}" | tee -a "$LOG"
@@ -1746,16 +2275,25 @@ restore_db_backup() {
 }
 
 restore_backups() {
+    set +e
+    STEP_COUNTER=1
     section "Something went wrong! restoring backups..."
     restore_app_backup
     restore_db_backup
     restore_php_backup
     restore_ioncube_backup
     restore_nginx_backup
+    step "Setup Spartan"
     app_restore_steps
     apply_permissions
+    config_php_fpm
+    [[ "$WEB" == "nginx" ]] && run "Restart nginx" systemctl restart nginx
     app_maintenance_off
-    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear" || true
+    rotate_backups
+    step "Self Tests"
+    check_db_connection
+    smoke_test
     die "Backups restored!"
 }
 
@@ -1771,12 +2309,14 @@ app_get_dir() {
 }
 
 app_find_web(){
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-        WEB="nginx"
-    elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null; then
-        WEB="apache"
-    else
-        die "No supported web server detected (nginx or apache)."
+    if [[ -z "${WEB:-}" ]]; then
+        if systemctl is-active --quiet nginx 2>/dev/null || [[ -f /etc/nginx/nginx.conf ]]; then
+            WEB="nginx"
+        elif systemctl is-active --quiet apache2 2>/dev/null || systemctl is-active --quiet httpd 2>/dev/null || [[ -f /etc/apache2/apache2.conf ]] || [[ -f /etc/httpd/conf/httpd.conf ]]; then
+            WEB="apache"
+        else
+            die "No supported web server detected (nginx or apache)."
+        fi
     fi
 }
 
@@ -1898,8 +2438,10 @@ app_setup_dir(){
 
 Summary(){
     local summary
-    summary+="\n${CHOICE^} Summary:\n\n"
-    summary+="$(hr)\n"
+    local line="---------------------------------------------------------------------"
+    summary+="\n${line}\n"
+    summary+="${CHOICE^} Summary:\n"
+    summary+="${line}\n"
     summary+="> Product:\n"
     summary+="-  Name:        ${PRODUCT_NAME:-}\n"
     summary+="-  ID:          ${PRODUCT_ID:-}\n"
@@ -1911,12 +2453,12 @@ Summary(){
         summary+="-  Engine:      ${DB_ENGINE:-}\n"
         summary+="-  Connection:  ${DB_USER:-(not set)}@${DB_HOST:-(not set)}:${DB_PORT:-(not set)}/${DB_NAME:-(not set)}\n"
     fi
-    summary+="$(hr)\n\n"
+    summary+="${line}\n"
 
     if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
         whiptail --title "$TITLE" --yesno "$summary" 22 73 || exit 1
     else
-        echo -e "$summary"
+        echo -e "${summary//$line/${BLUE}$line${NC}}"
     fi
 }
 
@@ -2017,16 +2559,20 @@ parse_args() {
                 ACTION="update"
                 shift
                 ;;
-            --get-link|--get-download-link|--download-link) 
-                ACTION="get_link"
-                shift
-                ;;
             --delete|--uninstall)
                 ACTION="uninstall"
                 shift
                 ;;
             --test)
                 ACTION="test"
+                shift
+                ;;
+            --setup-perms)
+                ACTION="setup_perms"
+                shift
+                ;;
+            --upload-logs)
+                ACTION="upload_logs"
                 shift
                 ;;
             --app-dir=*)
@@ -2196,6 +2742,73 @@ parse_args() {
                     shift 1
                 fi
                 ;;
+            --keep-nginx)
+                KEEP_NGINX=1
+                shift
+                ;;
+            --keep-css)
+                KEEP_CSS=1
+                shift
+                ;;
+            --keep-themes)
+                KEEP_THEMES=1
+                shift
+                ;;
+            --keep-portals)
+                KEEP_PORTALS=1
+                shift
+                ;;
+            --keep-emails)
+                KEEP_EMAILS=1
+                shift
+                ;;
+            --keep-favicon)
+                KEEP_FAVICON=1
+                shift
+                ;;
+            --options-file) 
+                local optionsFile
+                optionsFile="${2:-}"
+                if [[ -n "${optionsFile}" ]]; then
+                    OPTIONS_JSON_NAME="${optionsFile}"
+                    shift 2
+                else
+                    echo "Missing argument for --options-file" >&2
+                    exit 1
+                fi
+                ;;
+            --options-file=*) 
+                local optionsFile
+                optionsFile="${1#--options-file=}"
+                if [[ -n "${optionsFile}" ]]; then
+                    OPTIONS_JSON_NAME="${optionsFile}"
+                    shift 1
+                else
+                    echo "Missing argument for --options-file=" >&2
+                    exit 1
+                fi
+                ;;
+            --add-swap)
+                local swap
+                swap="${2:-1024}"
+                if [[ -n "${swap}" ]]; then
+                    FORCE_SWAP=1
+                    SWAP_SIZE="${swap}"
+                    shift 2
+                fi
+                ;;
+            --add-swap=*) 
+                local swap
+                swap="${1#--add-swap=}"
+                if [[ -n "${swap}" ]]; then
+                    FORCE_SWAP=1
+                    SWAP_SIZE="${swap}"
+                    shift 1
+                else
+                    echo "Missing argument for --add-swap=" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 echo "Unknown option: $1" >&2
                 shift
@@ -2229,26 +2842,15 @@ noninteractive_checks(){
         fi
     elif [[ "$ACTION" == "update" ]]; then
         if [[ "$USED_APP_DIR" == 1 ]]; then
-            echo "All required arguments supplied continuing in non-interactive mode."
+            echo "All required and optional arguments supplied continuing in non-interactive mode."
         else
-            echo "required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
+            echo "All required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
         fi
-    elif [[ "$ACTION" == "get_link" || "$ACTION" == "get link" ]]; then
-        missing_args=()
-        required_args=(
-            ACTION
-            DOMAIN
-            LICENSE_KEY
-            PRODUCT_ID
-        )
-        for arg in "${required_args[@]}"; do
-            [[ -z "${!arg:-}" ]] && missing_args+=("$arg")
-        done
-        if [[ "${#missing_args[@]}" -eq 0 ]]; then
-            echo "All required arguments supplied continuing in non-interactive mode."
+    elif [[ "$ACTION" == "upload_logs" || "$ACTION" == "upload logs" || "$ACTION" == "setup_perms" || "$ACTION" == "setup perms" ]]; then
+        if [[ "$USED_APP_DIR" == 1 ]]; then
+            echo "All required and optional arguments supplied continuing in non-interactive mode."
         else
-            echo "Missing arguments for non-interactive mode to continue: ${missing_args[*]}"
-            exit 1
+            echo "All required arguments supplied continuing in non-interactive mode. (missing optional --app-dir)"
         fi
     else
         echo "non-interactive mode not available for this action at the moment."
@@ -2264,7 +2866,7 @@ Options:
     -h, --help                  Show this help message and exit
     --install                   Run a fresh installation (interactive/non-interactive)
     --update                    Update an existing installation (non-interactive)
-    --get-link                  Get the one time download link for spartan (non-interactive)
+    --setup-perms               Setup permissions on a installation (non-interactive)
     --delete, --uninstall       Delete the application directory (no DB removal)
     --non-interactive           hides all confirmation and configuration dialogs
                                 (used for 1 line installs/updates)
@@ -2307,6 +2909,9 @@ parse_args "$@"
 
 need_root
 detect_os
+setup_permanent_swap
+sync_server_time
+section "Install essentials"
 pm_update_upgrade 0
 install_essentials
 
@@ -2335,115 +2940,135 @@ if [[ "$CHOICE" == "install" ]]; then
 
     # A resume
     Summary
+    install(){
+        # License part
+        step "Download & Install Spartan"
+        license_verify
+        license_download_and_extract
+        
 
-    # License part
-    license_verify
-    license_download_and_extract
-    
-    # Install system stack & app deps
-    install_php_stack
-    install_webserver
-    no_apache
-    install_nodejs_lts
-    install_db_engine
-    db_create
-    install_composer
-    prepare_ioncube
-    
-    # App setup & build
-    detect_web_user_group
-    config_php_fpm
-    config_opcache
-    config_network
-    app_env_setup
-    app_install_steps
-    apply_permissions
-    setup_cron
-    setup_systemd_queue
-    
-    nginx_layout_detect
-    configure_nginx_http_only
-    if [[ -n "${certbot_choice-}" ]]; then
-        echo "Skipping certbot/ssl prompt, using provided ssl mode."
-    elif [[ "$ASSUME_YES" == 1 ]]; then
-        certbot_choice="install"
-        echo "Assuming certbot/ssl mode as install."
-    else
-        certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
-    fi
+        # Install system stack & app deps
+        step "Install Components"
+        install_php_stack
+        install_webserver
+        no_apache
+        install_nodejs_lts
+        install_db_engine
+        db_create
+        install_composer
+        prepare_ioncube
+        
 
-    if [[ "$WEB" == "nginx" ]]; then
-        case "$certbot_choice" in
-            install)
-                install_certbot_pkgs
-                run_certbot_webroot
-                configure_nginx_ssl
-                flip_app_url_to_https
-                ;;
-            later)
-                section "Chose HTTP only."
-                ;;
-            assume)
-                section "Assuming SSL – base config for HTTPS."
-                install_certbot_pkgs
-                create_self_signed_certs
-                configure_nginx_ssl
-                flip_app_url_to_https
-                ;;
-            *)
-                section "unexpected response – skipping SSL setup."
-                ;;
-        esac
-    else
-        case "$certbot_choice" in
-            install)
-                install_certbot_pkgs
-                run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
-                flip_app_url_to_https
-                ;;
-            later)
-                section "User chose to install SSL later (Apache)."
-                ;;
-            assume)
-                section "Assuming SSL template for Apache – enabling SSL vhost"
-                install_certbot_pkgs
-                flip_app_url_to_https
-                ;;
-            *)   section "Dialog cancelled – skipping Apache SSL setup."
-                ;;
-        esac
+        # App setup & build
+        step "Setup Spartan & Components"
+        detect_web_user_group
+        config_php_fpm
+        config_opcache
+        config_network
+        app_env_setup
+        app_install_steps
+        apply_permissions
+        setup_cron
+        setup_systemd_queue
+        
+        nginx_layout_detect
+        configure_nginx_http_only
+        if [[ -n "${certbot_choice-}" ]]; then
+            echo "Skipping certbot/ssl prompt, using provided ssl mode."
+        elif [[ "$ASSUME_YES" == 1 ]]; then
+            certbot_choice="install"
+            echo "Assuming certbot/ssl mode as install."
+        else
+            certbot_choice=$(whiptail --title "$TITLE" --menu "Install SSL with Certbot for ${DOMAIN} now?" 11 70 3 "install" "(run certbot automatically)" "later" "(skip SSL completely)" "assume" "(https template with self-signed certs)" 3>&1 1>&2 2>&3) || true
+        fi
 
-    fi
-    
-    app_maintenance_off
-    run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+        if [[ "$WEB" == "nginx" ]]; then
+            case "$certbot_choice" in
+                install)
+                    install_certbot_pkgs
+                    run_certbot_webroot
+                    configure_nginx_ssl
+                    flip_app_url_to_https
+                    ;;
+                later)
+                    section "Chose HTTP only."
+                    ;;
+                assume)
+                    section "Assuming SSL – base config for HTTPS."
+                    install_certbot_pkgs
+                    create_self_signed_certs
+                    configure_nginx_ssl
+                    flip_app_url_to_https
+                    ;;
+                *)
+                    section "unexpected response – skipping SSL setup."
+                    ;;
+            esac
+        else
+            case "$certbot_choice" in
+                install)
+                    install_certbot_pkgs
+                    run "Certbot (apache)" certbot --apache -d "${DOMAIN}" || true
+                    flip_app_url_to_https
+                    ;;
+                later)
+                    section "User chose to install SSL later (Apache)."
+                    ;;
+                assume)
+                    section "Assuming SSL template for Apache – enabling SSL vhost"
+                    install_certbot_pkgs
+                    flip_app_url_to_https
+                    ;;
+                *)   section "Dialog cancelled – skipping Apache SSL setup."
+                    ;;
+            esac
 
-    section "All done!"
-    echo
-    hr 
-    echo "Summary:"
-    hr
-    echo "- Domain:       ${DOMAIN:-}"
-    echo "- App Path:     ${APP_DIR:-}"
-    echo "- Web server:   ${WEB:-}"
-    [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
-    php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
-    echo "- DB:"
-    echo "-  Engine:      ${DB_ENGINE:-}"
-    echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
-    echo "- Logs:"
-    echo "-  Script:      ${LOG:-}"
-    echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
-    [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
-    hr
-    echo "Useful Commands:"
-    hr
-    echo "- Check Services: systemctl status dezerx.service"
-    echo "- Check Cron:     crontab -l"
-    echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
-    hr
-    echo
+        fi
 
+        ensure_options_json
+        app_maintenance_off
+        run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+        step "Self Tests"
+        smoke_test
+        check_db_connection
+
+        section "All done!"
+        echo
+        hr 
+        echo "Summary:"
+        hr
+        echo "- Domain:       ${DOMAIN:-}"
+        echo "- App Path:     ${APP_DIR:-}"
+        echo "- Web server:   ${WEB:-}"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
+        php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
+        echo "- DB:"
+        echo "-  Engine:      ${DB_ENGINE:-}"
+        echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
+        echo "- Logs:"
+        echo "-  Script:      ${LOG:-}"
+        echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
+        [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
+        hr
+        echo "Dashboard Access:"
+        hr
+        local protocol="http"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && protocol="https"
+        local full_url="${protocol}://${DOMAIN:-}"
+        local clickable_url="\033]8;;${full_url}\033\\${full_url}\033]8;;\033\\"
+        echo -e "- URL:          ${L_CYAN}${clickable_url}${NC}"
+        echo "- Next Step:    Go to the URL above and create an account."
+        echo "- Note:         The first account created is automatically granted Admin privileges."
+        hr
+        echo "Useful Commands:"
+        hr
+        echo "- Check Services: systemctl status dezerx.service"
+        echo "- Check Cron:     crontab -l"
+        echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
+        hr
+        echo
+    }
+    install
     exit 0
 elif [[ "$CHOICE" == "update" ]]; then
     # Get all needed variables
@@ -2465,81 +3090,97 @@ elif [[ "$CHOICE" == "update" ]]; then
         exit 1
     fi
 
+    ask_what_to_keep
+
     Summary
 
     safe_update() {
+        check_db_connection
         update_status=0
         trap 'if [[ $update_status -eq 0 ]]; then restore_backups; fi' EXIT
 
+        step "Download & Install New Spartan Version"
+
         license_download_and_extract
         
+        step "Install/Upgrade Components"
+
         install_php_stack
+        install_nodejs_lts
         prepare_ioncube
         config_opcache
         config_network
 
+        step "Setup Spartan & Components"
+
         # Install and set perms
         app_setup_dir
         app_update_steps
+        restore_options_items
         apply_permissions
         setup_cron
         setup_systemd_queue
         
-        # Restart services
+        # Restart services and update nginx config
         if [[ "$WEB" == "nginx" ]]; then
-            section "Updating NGINX configuration"
-            if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
-                echo "Detected HTTPS in .env"
-                CERT_DIR=""
-                local existing_cert_path
+            if [[ "$KEEP_NGINX" == "0" ]]; then
+                section "Updating NGINX configuration"
+                if grep -qE "^APP_URL=[[:space:]]*[\"']?https://" "${APP_DIR}/.env"; then
+                    echo "Detected HTTPS in .env"
+                    CERT_DIR=""
+                    local existing_cert_path
 
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
 
-                    if [[ -n "${existing_cert_path-}" ]]; then
-                        CERT_DIR=$(dirname "${existing_cert_path-}")
-                        echo "Extracted certificate directory from the old NGINX configuration"
+                        if [[ -n "${existing_cert_path-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                            echo "Extracted certificate directory from the old NGINX configuration"
+                        fi
+                    elif [[ -f "${NGINX_CONF_PATH}" ]]; then
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
+
+                        if [[ -n "${existing_cert_path-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                            echo "Extracted certificate directory from the old NGINX configuration"
+                        fi
                     fi
-                elif [[ -f "${NGINX_CONF_PATH}" ]]; then
-                    existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
 
-                    if [[ -n "${existing_cert_path-}" ]]; then
-                        CERT_DIR=$(dirname "${existing_cert_path-}")
-                        echo "Extracted certificate directory from the old NGINX configuration"
+                    if [[ -z ${CERT_DIR-} ]]; then
+                        if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
+                            CERT_DIR="/etc/certs/spartan/${DOMAIN}"
+                        elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+                            CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
+                        else
+                            error "Could not locate SSL certificates for NGINX. Falling back to a self-signed cert to prevent crash."
+                            create_self_signed_certs
+                        fi
                     fi
-                fi
 
-                if [[ -z ${CERT_DIR-} ]]; then
-                    if [[ -d "/etc/certs/spartan/${DOMAIN}" ]]; then
-                        CERT_DIR="/etc/certs/spartan/${DOMAIN}"
-                    elif [[ -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
-                        CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
-                    else
-                        CERT_DIR=""
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
                     fi
-                fi
 
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
-                fi
+                    if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                        run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                    fi
 
-                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
-                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
-                fi
+                    configure_nginx_ssl
+                else
+                    echo "Detected HTTP in .env"
 
-                configure_nginx_ssl
+                    if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
+                        run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
+                    fi
+
+                    if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
+                        run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
+                    fi
+
+                    configure_nginx_http_only
+                fi
             else
-                echo "Detected HTTP in .env"
-
-                if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                    run "Removing old nginx config" rm -f "${NGINX_CONF_OLD_PATH}" || true
-                fi
-
-                if [[ -n "${NGINX_CONF_OLD_SYMLINK}" && -L "${NGINX_CONF_OLD_SYMLINK}" ]]; then
-                    run "Removing old nginx symlink" rm -f "${NGINX_CONF_OLD_SYMLINK}" || true
-                fi
-
-                configure_nginx_http_only
+                echo "Skipping NGINX configuration update"
             fi
             restart_php_fpm
             run "Restart nginx" systemctl restart nginx
@@ -2549,11 +3190,16 @@ elif [[ "$CHOICE" == "update" ]]; then
             echo "Unknown web server, cannot restart." | tee -a "$LOG"
         fi
         
+        ensure_options_json
         app_maintenance_off
         run "php artisan optimize:clear" bash -lc "cd '${APP_DIR}' && php artisan optimize:clear"
+        rotate_backups
+        step "Self Tests"
+        check_db_connection
+        smoke_test
         update_status=1
-
         trap - EXIT
+
 
         section "All done!"
         echo
@@ -2573,6 +3219,16 @@ elif [[ "$CHOICE" == "update" ]]; then
         echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
         [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
         hr
+        echo "Dashboard Access:"
+        hr
+        local protocol="http"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && protocol="https"
+        local full_url="${protocol}://${DOMAIN:-}"
+        local clickable_url="\033]8;;${full_url}\033\\${full_url}\033]8;;\033\\"
+        echo -e "- URL:          ${L_CYAN}${clickable_url}${NC}"
+        echo "- Next Step:    Go to the URL above and create an account."
+        echo "- Note:         The first account created is automatically granted Admin privileges."
+        hr
         echo "Useful Commands:"
         hr
         echo "- Check Services: systemctl status dezerx.service"
@@ -2583,20 +3239,39 @@ elif [[ "$CHOICE" == "update" ]]; then
     }
     safe_update
     exit 0
-elif [[ "$CHOICE" == "get_link" || "$ACTION" == "get link" ]]; then
-    app_get_dir
-    app_get_var
+elif [[ "$CHOICE" == "setup_perms" || "$CHOICE" == "setup perms" ]]; then
+    app_find_web
     detect_web_user_group
-
-    ask_domain
-    ask_license_key
-    Summary
-
-    if ! license_verify; then
-        exit 1
+    section "Applying permissions to ${APP_DIR}..."
+    apply_permissions
+    config_php_fpm
+    echo "Permissions applied!"
+    exit 0
+elif [[ "$CHOICE" == "upload_logs" || "$CHOICE" == "upload logs" ]]; then
+    echo "I couldn't find a secure platform where to send the logs, so this function doesn't work for now."
+    exit 1
+    section "Bundling and uploading logs..."
+    if ! command -v zip >/dev/null 2>&1; then
+        echo "Zip command not found, installing..."
+        pm_install zip
     fi
+    log_zip=$(mktemp -u "/tmp/spartan_logs_XXXXXX.zip")
+    shopt -s nullglob
+    zip -qj "$log_zip" "$LOG" "${APP_DIR}/storage/logs/"* 2>/dev/null || true
+    shopt -u nullglob
+    if [[ -f "$log_zip" ]]; then
+        echo "Uploading logs to  (auto-deletes after 1 download)..."
+        local upload_response
+        upload_response=$(curl -s -F "file=@${log_zip}" )
+        upload_url=$(echo "$upload_response" | jq -r '.link // empty' 2>/dev/null)
 
-    request_downlaod_link
+        local clickable_url="\033]8;;${upload_url}\033\\${upload_url}\033]8;;\033\\"
+
+        echo -e "\n${GREEN}Logs uploaded successfully! Share this URL:${NC}\n${CYAN}${clickable_url}${NC}"
+        rm -f "$log_zip"
+    else
+        echo "Failed to gather logs for upload."
+    fi
     exit 0
 elif [[ "$CHOICE" == "uninstall" ]]; then
     whiptail --title "$TITLE" --yesno "Are you sure you want to delete the application at ${APP_DIR}?\nThis will NOT delete the database or any backups you may have created.\n\nThis action cannot be undone." 15 70 || exit 1
@@ -2611,33 +3286,53 @@ elif [[ "$CHOICE" == "uninstall" ]]; then
 elif [[ "$CHOICE" == "test" ]]; then
     echo "test :3"
 
-    db_collect
+    step "test"
+    showcase_colors
+    Summary
 
-    echo
-    hr 
-    echo "Summary:"
-    hr
-    echo "- Domain:       ${DOMAIN:-}"
-    echo "- App Path:     ${APP_DIR:-}"
-    echo "- Web server:   ${WEB:-}"
-    [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
-    php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
-    echo "- DB:"
-    echo "-  Engine:      ${DB_ENGINE:-}"
-    echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
-    echo "- Logs:"
-    echo "-  Script:      ${LOG:-}"
-    echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
-    [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
-    hr
-    echo "Useful Commands:"
-    hr
-    echo "- Check Services: systemctl status dezerx.service"
-    echo "- Check Cron:     crontab -l"
-    echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
-    hr
-    echo
+    app_get_dir
+    app_get_var
+    detect_web_user_group
+    nginx_layout_detect
+    rotate_backups
 
+    test_summary(){
+        echo
+        hr 
+        echo "Summary:"
+        hr
+        echo "- Domain:       ${DOMAIN:-}"
+        echo "- App Path:     ${APP_DIR:-}"
+        echo "- Web server:   ${WEB:-}"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && echo "- SSL Path:     /etc/letsencrypt/live/${DOMAIN:-}/"
+        php -v | grep -qi ioncube && echo "- ionCube:      enabled" || echo "- ionCube:      not detected"
+        echo "- DB:"
+        echo "-  Engine:      ${DB_ENGINE:-}"
+        echo "-  Connection:  ${DB_USER:-}@${DB_HOST:-}:${DB_PORT:-}/${DB_NAME:-}"
+        echo "- Logs:"
+        echo "-  Script:      ${LOG:-}"
+        echo "-  Spartan:     ${APP_DIR:-}/storage/logs/laravel.log"
+        [[ "${WEB:-}" == "nginx" ]] && echo "-  nginx:       /var/log/nginx/error.log" || echo "-  apache:      /var/log/httpd/error.log"
+        hr
+        echo "Dashboard Access:"
+        hr
+        local protocol="http"
+        [[ "${certbot_choice:-}" != "later" && -n "${certbot_choice:-}" ]] && protocol="https"
+        local full_url="${protocol}://${DOMAIN:-}"
+        local clickable_url="\033]8;;${full_url}\033\\${full_url}\033]8;;\033\\"
+        echo -e "- URL:          ${L_CYAN}${clickable_url}${NC}"
+        echo "- Next Step:    Go to the URL above and create an account."
+        echo "- Note:         The first account created is automatically granted Admin privileges."
+        hr
+        echo "Useful Commands:"
+        hr
+        echo "- Check Services: systemctl status dezerx.service"
+        echo "- Check Cron:     crontab -l"
+        echo "- Check Logs:     tail -n 50 -f ${APP_DIR:-}/storage/logs/laravel.log"
+        hr
+        echo
+    }
+    test_summary
     exit 0
 else
     echo "No valid choice made, exiting."
