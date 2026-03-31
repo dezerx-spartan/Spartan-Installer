@@ -3157,17 +3157,17 @@ elif [[ "$CHOICE" == "update" ]]; then
                     local existing_cert_path
 
                     if [[ -f "${NGINX_CONF_OLD_PATH}" ]]; then
-                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}')
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_OLD_PATH" | head -n1 | awk '{print $2}' || true)
 
-                        if [[ -n "${existing_cert_path-}" ]]; then
-                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                        if [[ -n "${existing_cert_path:-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path:-}")
                             echo "Extracted certificate directory from the old NGINX configuration"
                         fi
                     elif [[ -f "${NGINX_CONF_PATH}" ]]; then
-                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}')
+                        existing_cert_path=$(grep -Eo 'ssl_certificate[[:space:]]+[^;]+' "$NGINX_CONF_PATH" | head -n1 | awk '{print $2}' || true)
 
-                        if [[ -n "${existing_cert_path-}" ]]; then
-                            CERT_DIR=$(dirname "${existing_cert_path-}")
+                        if [[ -n "${existing_cert_path:-}" ]]; then
+                            CERT_DIR=$(dirname "${existing_cert_path:-}")
                             echo "Extracted certificate directory from the old NGINX configuration"
                         fi
                     fi
