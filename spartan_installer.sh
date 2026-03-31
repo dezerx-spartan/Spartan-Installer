@@ -12,7 +12,7 @@ DOMAIN=""
 APP_DIR="/var/www/spartan"
 APP_DEFAULT_DIR="/var/www/spartan"
 IONCUBE_DIR="/usr/local/ioncube"
-BACKUP_DIR="/tmp/spartan"
+BACKUP_DIR="/var/backups/spartan"
 CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 APP_USER_DEFAULT="www-data"
 APP_GROUP_DEFAULT="www-data"
@@ -27,6 +27,7 @@ ACTION=""
 ASSUME_YES=0
 SHOW_HELP=0
 NONINTERACTIVE=0
+IS_TTY=0
 USED_APP_DIR=0
 ENABLE_IPV6=0
 KEEP_NGINX=0
@@ -101,33 +102,48 @@ run(){
     
     local spin='-\|/'
     local i=0
-    
-    # Hide cursor
-    echo -ne "\033[?25l" >&3
-    
+
+    if [[ ${IS_TTY} -eq 1 ]]; then
+        # Hide cursor
+        echo -ne "\033[?25l" >&3
+    fi
+
     while kill -0 $pid 2>/dev/null; do
-        i=$(( (i+1) %4 ))
-        local last_line=""
-        if [ -s "$tmpout" ]; then
-            last_line=$(tail -n 1 "$tmpout" | sed 's/\x1b\[[0-9;]*m//g' | tr -dc '[:print:]' | cut -c 1-50)
+        if [[ ${IS_TTY} -eq 1 ]]; then
+            i=$(( (i+1) %4 ))
+            local last_line=""
+            if [ -s "$tmpout" ]; then
+                last_line=$(tail -n 1 "$tmpout" | sed 's/\x1b\[[0-9;]*m//g' | tr -dc '[:print:]' | cut -c 1-50)
+            fi
+            
+            printf "\r\033[K${YELLOW}${spin:$i:1}${NC} %.50s | %.50s" "$desc" "$last_line" >&3
         fi
-        
-        printf "\r\033[K${YELLOW}${spin:$i:1}${NC} %.50s | %.50s" "$desc" "$last_line" >&3
         sleep 0.1
     done
+
     set +e
     wait $pid
     local extcode=$?
     set -e
     
-    # Show cursor
-    echo -ne "\033[?25h" >&3
-    
+    if [[ ${IS_TTY} -eq 1 ]]; then
+        # Show cursor
+        echo -ne "\033[?25h" >&3
+    fi
+
     if [ $extcode -eq 0 ]; then
-        printf "\r\033[K${GREEN}✔${NC} %s\n" "$desc" >&3
+        if [[ ${IS_TTY} -eq 1 ]]; then
+            printf "\r\033[K${GREEN}✔${NC} %s\n" "$desc" >&3
+        else
+            echo -e "✔ ${desc}" >&3
+        fi
         cat "$tmpout" >&4
     else
-        printf "\r\033[K${RED}✘${NC} %s (Failed)\n" "$desc" >&3
+        if [[ ${IS_TTY} -eq 1 ]]; then
+            printf "\r\033[K${RED}✘${NC} %s (Failed)\n" "$desc" >&3
+        else
+            echo -e "✘ ${desc} (Failed)" >&3
+        fi
         echo -e "${RED}--- Output ---${NC}" >&3
         cat "$tmpout" >&3
         echo -e "${RED}--------------${NC}" >&3
@@ -312,6 +328,7 @@ process_options_json(){
     fi
 
     EXCLUDE_TMPDIR=$(mktemp -d "/tmp/spartan_exclude.XXXXXX")
+    trap '[[ "${EXCLUDE_TMPDIR:-}" != "/" ]] && rm -rf "${EXCLUDE_TMPDIR:-}"' RETURN
     run "Saving exclusions state" cp -a "$json_file" "${EXCLUDE_TMPDIR}/${OPTIONS_JSON_NAME}"
 
     _do_deletions() {
@@ -432,6 +449,7 @@ app_prepare_dir(){
                     "${update_tmpdir}/favicon/" 2>/dev/null || true
             }
             run "Saving favicon" _do_save_favicon
+            unset -f _do_save_favicon
         fi
 
         run "Saving application core folders" rsync -a --remove-source-files --ignore-missing-args \
@@ -461,15 +479,15 @@ app_prepare_dir(){
         run "Restoring application core folders" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/storage' '${update_tmpdir}/public' '${update_tmpdir}/Modules' '${APP_DIR}/' 2>/dev/null || true"
         run "Restoring modules_statuses.json" bash -c "mv -- '${update_tmpdir}/modules_statuses.json' '${APP_DIR}/modules_statuses.json.old' 2>/dev/null || true"
         if [[ "$KEEP_PORTALS" == 1 && -d "${update_tmpdir}/Portals" ]]; then
-            run "Ensuring dashboard portal directory exists" mkdir -p "${APP_DIR}/resources/js/pages/Portal"
+            [[ ! -d "${APP_DIR}/resources/js/pages/Portal" ]] && run "Creating portal directory" mkdir -p "${APP_DIR}/resources/js/pages/Portal"
             run "Restoring dashboard portals" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/Portals/' '${APP_DIR}/resources/js/pages/Portal/' 2>/dev/null || true"
         fi
         if [[ "$KEEP_THEMES" == 1 && -d "${update_tmpdir}/theme" ]]; then
-            run "Ensuring themes directory exists" mkdir -p "${APP_DIR}/resources/js/pages/theme"
+            [[ ! -d "${APP_DIR}/resources/js/pages/theme" ]] && run "Creating themes directory" mkdir -p "${APP_DIR}/resources/js/pages/theme"
             run "Restoring themes" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/default/' '${APP_DIR}/resources/js/pages/theme/default/' || true"
         fi
         if [[ "$KEEP_EMAILS" == 1 && -d "${update_tmpdir}/emails" ]]; then
-            mkdir -p "${APP_DIR}/resources/views/emails"
+            [[ ! -d "${APP_DIR}/resources/views/emails" ]] && run "Creating emails directory" mkdir -p "${APP_DIR}/resources/views/emails"
             run "Restoring email templates" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/emails/' '${APP_DIR}/resources/views/emails/' || true"
         fi
     fi
@@ -477,8 +495,12 @@ app_prepare_dir(){
 
 app_restore_files(){
     run "Restoring .env configuration" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/.env' '${APP_DIR}/' 2>/dev/null || true"
-    [[ "$KEEP_FAVICON" == 1 ]] && run "Restoring favicon files" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/favicon/' '${APP_DIR}/public/' 2>/dev/null || true"
+    if [[ "$KEEP_FAVICON" == 1 && -d "${update_tmpdir}/favicon" ]]; then
+        [[ ! -d "${APP_DIR}/public" ]] && run "Creating public directory" mkdir -p "${APP_DIR}/public"
+        run "Restoring favicon" bash -lc "rsync -a --remove-source-files --ignore-missing-args '${update_tmpdir}/favicon/' '${APP_DIR}/public/' 2>/dev/null || true"
+    fi
     if [[ "$KEEP_CSS" == 1 && "$css_save_methode" == "fallback" ]]; then
+        [[ ! -d "${APP_DIR}/resources/css/" ]] && run "Creating css directory" mkdir -p "${APP_DIR}/resources/css/"
         run "Restoring dashboard css (Methode: fallback)" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/css/' '${APP_DIR}/resources/css/' 2>/dev/null || true"
     fi
     rmdir -- "${update_tmpdir}" 2>/dev/null || true
@@ -668,7 +690,7 @@ check_db_connection() {
     section "Testing Database Connection"
     echo -e "Testing connection to ${DB_HOST}:${DB_PORT} as user '${DB_USER}'..."
 
-    if output=$(mysql --connect-timeout=5 -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" -e "SELECT 1;" 2>&1); then
+    if output=$(MYSQL_PWD="$DB_PASS" mysql --connect-timeout=5 -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -e "SELECT 1;" 2>&1); then
         echo "Database connection successful!"
         return 0
     else
@@ -892,15 +914,15 @@ mysql_exec(){
     local SQL="$1"
     local ROOTPW="${2:-}"
     if mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1; then
-        mysql --protocol=socket -uroot -e "$SQL"
+        mysql --protocol=socket -uroot <<< "$SQL"
         return $?
     fi
     if mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then
-        mysql -uroot -e "$SQL"
+        mysql -uroot <<< "$SQL"
         return $?
     fi
     if [[ -n "$ROOTPW" ]]; then
-        mysql -uroot -p"${ROOTPW}" -e "$SQL"
+        MYSQL_PWD="${ROOTPW}" mysql -uroot <<< "$SQL"
         return $?
     fi
     return 1
@@ -915,7 +937,7 @@ db_create(){
     GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${DB_HOST}' WITH GRANT OPTION;
     FLUSH PRIVILEGES;"
     local ROOTPW=""
-    if ! mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1 && mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then
+    if ! mysql --protocol=socket -uroot -e "SELECT 1;" >/dev/null 2>&1 && ! mysql -uroot -e "SELECT 1;" >/dev/null 2>&1; then
         [[ "$NONINTERACTIVE" == "0" ]] && ROOTPW=$(whiptail --title "$TITLE" --passwordbox "Enter MySQL/MariaDB root password" 10 70 3>&1 1>&2 2>&3) || return 1
     fi
     run "Create database & user" mysql_exec "$SQL" "$ROOTPW" || die "Failed to create database/user. Check root access."
@@ -1013,7 +1035,7 @@ install_nodejs_lts(){
         fedora|centos|rhel|almalinux|rocky)
             run "Setup NodeSource LTS (RPM)" bash -lc "curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash - || true"
             if have dnf; then 
-                if dnf module list nodejs >/dev/null 2>&1 | grep -qi "^nodejs"; then
+                if dnf module list nodejs 2>/dev/null | grep -qi "^nodejs"; then
                     run "Resetting Node.js DNF module" dnf module reset nodejs -y || true
                 fi
                 run "Installing/Updating Node.js" dnf install -y nodejs
@@ -1032,7 +1054,8 @@ install_webserver(){
     if [[ "$WEB" == "nginx" ]]; then
         case "$DISTRO_ID" in
             debian|ubuntu)
-                run "Adding nginx signing key" bash -c "curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null"
+                local tmp_file=$(mktemp)
+                run "Adding nginx signing key" bash -c "curl -fsSL -o '${tmp_file}' https://nginx.org/keys/nginx_signing.key && gpg --yes --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg '${tmp_file}' && rm -f '${tmp_file}'"
                 run "Using nginx mainline packages as default" bash -lc "cat > '/etc/apt/sources.list.d/nginx.list' <<'EOF'
 deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/${DISTRO_ID} $(lsb_release -cs) nginx
 EOF"
@@ -1051,7 +1074,7 @@ EOF"
                 pm_install nginx
             ;;
             centos|rhel|almalinux|rocky)
-                run "Installing yum-utils" yum install yum-utils
+                run "Installing yum-utils" yum install -y yum-utils
                 
                 run "Creating /etc/yum.repos.d/nginx.repo" bash -lc " cat > '/etc/yum.repos.d/nginx.repo' <<'EOF'
 [nginx-stable]
@@ -1071,7 +1094,7 @@ gpgkey=https://nginx.org/keys/nginx_signing.key
 module_hotfixes=true
 EOF"
                 run "Enabling nginx mainline packages" yum-config-manager --enable nginx-mainline
-                run "installing nginx" sudo yum install nginx
+                run "Installing nginx" sudo yum install -y nginx
             ;;
         esac
         run "Starting nginx" systemctl start nginx || true
@@ -1185,7 +1208,7 @@ ask_license_key(){
 license_verify(){
     local API="https://market.dezerx.com/api/license/verify"
     local TMP; TMP="$(mktemp)"
-    trap 'rm -rf "${TMP:-}"' RETURN
+    trap '[[ "${TMP:-}" != "/" ]] && rm -rf "${TMP:-}"' RETURN
     local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     section "Verify license (GET)"
     cmdshow "curl -fsS -H 'Authorization: Bearer ${masked}' -H 'X-Domain: ${DOMAIN}' -H 'X-Product-ID: ${PRODUCT_ID}' ${API}"
@@ -1256,6 +1279,7 @@ ask_what_to_keep(){
 license_download_and_extract(){
     local API="https://market.dezerx.com/api/license/download"
     local TMPDIR; TMPDIR="$(mktemp -d)"
+    trap '[[ "${TMPDIR:-}" != "/" ]] && rm -rf "${TMPDIR:-}"' RETURN
     local RESP_FILE="$TMPDIR/resp.json"
     local masked="${LICENSE_KEY:0:4}****${LICENSE_KEY: -4}"
     
@@ -1338,8 +1362,7 @@ license_download_and_extract(){
     fi
     
     app_prepare_dir
-    section "Sync application to ${APP_DIR}"
-    run "Deploying extracted files to core" rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
+    run "Sync application to ${APP_DIR}" rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
 
     if [[ $CHOICE == "update" ]]; then
         app_restore_files
@@ -1427,12 +1450,12 @@ prepare_ioncube(){
 
     URL="https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_${ARCH}.tar.gz"
     TMP="$(mktemp -d)"
+    trap '[[ "${TMP:-}" != "/" ]] && rm -rf "${TMP:-}"' RETURN
     TAR="$TMP/ioncube.tar.gz"
-    trap 'rm -rf "${TMP:-}"' RETURN
 
     run "Download IonCube" curl -fsSL "$URL" -o "$TAR"
     if [[ -f "$TAR" ]]; then
-        run "Extrat IonCube" tar -xzf "$TAR" -C "$TMP"
+        run "Extract IonCube" tar -xzf "$TAR" -C "$TMP"
     else
         die "Archive of IonCube loader for PHP ${PHPV} not found."
     fi
@@ -1587,7 +1610,7 @@ server {
     access_log /var/log/nginx/dezerx.app-access.log;
     error_log  /var/log/nginx/dezerx.app-error.log error;
 
-    client_max_body_size 100m;
+    client_max_body_size 100M;
     client_body_timeout 120s;
 
     sendfile off;
@@ -1620,7 +1643,8 @@ server {
         fastcgi_param HTTP_PROXY \"\";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 64k;
-        fastcgi_buffers 8 64k;
+        fastcgi_buffers 4 128k;
+        fastcgi_busy_buffers_size 256k;
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
@@ -2090,7 +2114,7 @@ create_self_signed_certs(){
 
     if [[ -f "${priv_key_path}" && -f "${cert_path}" ]]; then
         section "Self-signed certificates created at ${local_cert_dir}"
-        run "Making '${local_cert_dir}' only accessible by owner and group" chmod -R 640 "${local_cert_dir}"
+        run "Making '${local_cert_dir}' only accessible by owner and group" chmod -R u=rwX,g=rX,o= "${local_cert_dir}"
         run "Allowing ${WEB} access to '${local_cert_dir}' (${APP_USER}:${APP_GROUP})" chown -R "${APP_USER}:${APP_GROUP}" "${local_cert_dir}"
         CERT_DIR="${local_cert_dir}"
     else
@@ -2196,7 +2220,7 @@ create_db_backup() {
         DB_BACKUP_FILE="${backup_path}.sql.gz"
         
         section "Creating database backup at ${DB_BACKUP_FILE}"
-        run "Dumping database" bash -c "mysqldump -h '$DB_HOST' -P '$DB_PORT' -u '$DB_USER' -p'$DB_PASS' '$DB_NAME' | gzip > '$DB_BACKUP_FILE'" || die "Failed to create database backup."
+        run "Dumping database" bash -c 'MYSQL_PWD="$1" mysqldump -h "$2" -P "$3" -u "$4" "$5" | gzip > "$6"' _ "$DB_PASS" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_NAME" "$DB_BACKUP_FILE" || die "Failed to create database backup."
         echo "Database backup created at: $DB_BACKUP_FILE" | tee -a "$LOG"
     else
         echo "Database backup skipped: Unsupported DB engine ${DB_ENGINE}" | tee -a "$LOG"
@@ -2204,7 +2228,7 @@ create_db_backup() {
 }
 
 create_backups(){
-    mkdir -p "$BACKUP_DIR"
+    [[ ! -d "${BACKUP_DIR}" ]] && run "Creating back directory" mkdir -p "$BACKUP_DIR"
     create_nginx_backup
     create_app_backup
     create_db_backup
@@ -2264,7 +2288,7 @@ restore_db_backup() {
     if [[ -n "$DB_BACKUP_FILE" && -f "$DB_BACKUP_FILE" ]]; then
         if [[ "$DB_ENGINE" == "mysql" || "$DB_ENGINE" == "mariadb" ]]; then
             section "Restoring database backup from ${DB_BACKUP_FILE}"
-            run "Importing database dump" bash -c "gunzip < '$DB_BACKUP_FILE' | mysql -h '$DB_HOST' -P '$DB_PORT' -u '$DB_USER' -p'$DB_PASS' '$DB_NAME'" || echo "Failed to restore database backup."
+            run "Importing database dump" bash -c 'gunzip < "$1" | MYSQL_PWD="$2" mysql -h "$3" -P "$4" -u "$5" "$6"' _ "$DB_BACKUP_FILE" "$DB_PASS" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_NAME" || echo "Failed to restore database backup."
             echo "Database backup restored successfully." | tee -a "$LOG"
         else
             echo "Unsupported database engine: ${DB_ENGINE}" | tee -a "$LOG"
@@ -2455,7 +2479,7 @@ Summary(){
     fi
     summary+="${line}\n"
 
-    if [[ "$ASSUME_YES" == 0 || "$NONINTERACTIVE" == 0 ]]; then
+    if [[ "$ASSUME_YES" == 0 && "$NONINTERACTIVE" == 0 ]]; then
         whiptail --title "$TITLE" --yesno "$summary" 22 73 || exit 1
     else
         echo -e "${summary//$line/${BLUE}$line${NC}}"
@@ -2904,6 +2928,8 @@ EOF
 
 parse_args "$@"
 
+[[ -t 3 ]] && IS_TTY=1
+[[ "$IS_TTY" == 0 ]] && NONINTERACTIVE=1 && ASSUME_YES=1
 [[ "$SHOW_HELP" == 1 ]] && show_help
 [[ "$NONINTERACTIVE" == 1 ]] && noninteractive_checks
 
