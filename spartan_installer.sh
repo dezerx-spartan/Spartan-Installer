@@ -458,7 +458,7 @@ app_prepare_dir(){
     run "Cleaning up old application directory" _do_cleanup
 
     if [[ $CHOICE == "update" ]]; then
-        run "Restoring application core folders" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/storage' '${update_tmpdir}/public' '${update_tmpdir}/Modules' '${APP_DIR}/' 2>/dev/null || true"
+        run "Restoring application core folders" bash -c "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/storage' '${update_tmpdir}/public' '${APP_DIR}/' 2>/dev/null || true"
         run "Restoring modules_statuses.json" bash -c "mv -- '${update_tmpdir}/modules_statuses.json' '${APP_DIR}/modules_statuses.json.old' 2>/dev/null || true"
         if [[ "$KEEP_PORTALS" == 1 && -d "${update_tmpdir}/Portals" ]]; then
             run "Ensuring dashboard portal directory exists" mkdir -p "${APP_DIR}/resources/js/pages/Portal"
@@ -473,6 +473,50 @@ app_prepare_dir(){
             run "Restoring email templates" bash -lc "rsync -aI --remove-source-files --ignore-missing-args '${update_tmpdir}/emails/' '${APP_DIR}/resources/views/emails/' || true"
         fi
     fi
+}
+
+# Restores the user's modules into the freshly-deployed release, sorting each
+# one into its category sub-folder (Gateways/Services/Providers/Addons) by name suffix.
+# Modules that already ship with the new release are skipped (new version wins);
+# only genuinely user-added modules are preserved. Runs AFTER the new release is
+# deployed so the "already shipped?" check sees the new Modules tree.
+app_restore_modules(){
+    local saved="${update_tmpdir}/Modules"
+    local dest="${APP_DIR}/Modules"
+
+    [[ -d "$saved" ]] || { echo "No saved modules to restore - skipping"; return 0; }
+    mkdir -p "$dest"
+
+    local restored=0 skipped=0
+    while IFS= read -r -d '' modjson; do
+        local moddir name sub
+        moddir="$(dirname "$modjson")"
+        name="$(basename "$moddir")"
+
+        # New release wins: if a module with this name already ships in the new
+        # release (in any category sub-folder, or flat), keep the new version.
+        if [[ -n "$(find "$dest" -mindepth 1 -maxdepth 2 -type d -name "$name" -print -quit 2>/dev/null)" ]]; then
+            echo "Skipping '${name}' - shipped with new release (keeping new version)"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        # User-added module: sort into the correct category by name suffix.
+        case "$name" in
+            *Gateway)  sub="Gateways"  ;;
+            *Service)  sub="Services"  ;;
+            *Provider) sub="Providers" ;;
+            *)         sub="Addons"    ;;
+        esac
+
+        mkdir -p "${dest}/${sub}"
+        rsync -aI --ignore-missing-args "${moddir}/" "${dest}/${sub}/${name}/" 2>/dev/null || true
+        echo "Preserved custom module '${name}' -> Modules/${sub}/"
+        restored=$((restored + 1))
+    done < <(find "$saved" -mindepth 1 -name module.json -print0 2>/dev/null)
+
+    echo "User modules preserved: ${restored} | skipped (shipped with release): ${skipped}"
+    rm -rf -- "$saved" 2>/dev/null || true
 }
 
 app_restore_files(){
@@ -1342,6 +1386,7 @@ license_download_and_extract(){
     run "Deploying extracted files to core" rsync -aI --remove-source-files --ignore-missing-args "$SRC"/ "${APP_DIR}/"
 
     if [[ $CHOICE == "update" ]]; then
+        run "Restoring user modules" app_restore_modules
         app_restore_files
     elif [[ -d "${update_tmpdir}" ]]; then
         rmdir -- "${update_tmpdir}" 2>/dev/null || true
