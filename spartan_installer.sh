@@ -1460,9 +1460,55 @@ php_find_fpm_conf_dir(){
 
 # ---------------- ionCube ----------------
 
+# ---------------- ionCube ----------------
+
+# Fetch the ionCube loader archive.
+# Normal TLS first. If that fails specifically because the leaf cert has expired
+# (ionCube has let it lapse before), retry with the server's public key pinned:
+# we still prove we're talking to the real host, we just stop enforcing notAfter.
+ioncube_fetch(){
+    local url="$1" out="$2"
+    local host="downloads.ioncube.com"
+    local err pin
+
+    if curl -fsSL --connect-timeout 15 --retry 2 "$url" -o "$out"; then
+        return 0
+    fi
+
+    err="$(curl -sSL "$url" -o /dev/null 2>&1 || true)"
+    if ! grep -qi "certificate has expired" <<<"$err"; then
+        echo "ionCube download failed (not a cert-expiry issue):"
+        echo "$err"
+        return 1
+    fi
+
+    warn "downloads.ioncube.com is serving an EXPIRED TLS certificate.\nRetrying with the server's public key pinned (identity still verified, expiry ignored)."
+
+    pin="$(echo | openssl s_client -connect "${host}:443" -servername "$host" 2>/dev/null \
+        | openssl x509 -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform der 2>/dev/null \
+        | openssl dgst -sha256 -binary \
+        | openssl enc -base64)"
+
+    if [[ -z "$pin" ]]; then
+        echo "Could not read the public key from ${host}; refusing to download."
+        return 1
+    fi
+
+    echo "Pinning sha256//${pin}"
+    curl -fsSL --insecure --pinnedpubkey "sha256//${pin}" \
+        --connect-timeout 15 --retry 2 "$url" -o "$out" || return 1
+
+    # Make sure we got an archive and not an error page.
+    file -b "$out" | grep -Eqi 'gzip|tar' || { echo "Downloaded file is not a gzip archive."; return 1; }
+    return 0
+}
+
 prepare_ioncube(){
     local PHPV ARCH URL TMP TAR SO DST CUR_VER NEW_VER INI
+
     PHPV="$(php_minor)"
+    CUR_VER="$(php -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || echo 0)"
 
     case "$(uname -m)" in
         x86_64) ARCH="x86-64" ;;
@@ -1475,36 +1521,49 @@ prepare_ioncube(){
     TAR="$TMP/ioncube.tar.gz"
     trap 'rm -rf "${TMP:-}"' RETURN
 
-    run "Download IonCube" curl -fsSL "$URL" -o "$TAR"
-    if [[ -f "$TAR" ]]; then
-        run "Extrat IonCube" tar -xzf "$TAR" -C "$TMP"
-    else
-        die "Archive of IonCube loader for PHP ${PHPV} not found."
+    if ! run "Download IonCube" ioncube_fetch "$URL" "$TAR"; then
+        if [[ -n "$CUR_VER" && "$CUR_VER" != "0" ]]; then
+            warn "Could not download the ionCube loader. Keeping the installed loader (${CUR_VER}) and continuing."
+            ioncube_write_ini "$PHPV"
+            restart_php_fpm
+            return 0
+        fi
+        die "ionCube download failed and no loader is installed.\nThis is usually a problem on ionCube's side (expired TLS cert on downloads.ioncube.com).\nInstall /usr/local/ioncube/ioncube_loader_lin_${PHPV}.so manually and re-run."
     fi
+
+    run "Extract IonCube" tar -xzf "$TAR" -C "$TMP" || die "Failed to extract the ionCube archive."
 
     SO="$TMP/ioncube/ioncube_loader_lin_${PHPV}.so"
     [[ -f "$SO" ]] || die "IonCube loader for PHP ${PHPV} not found in extracted archive."
 
     NEW_VER="$(php -n -d "zend_extension=$SO" -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || true)"
-    CUR_VER="$(php -r 'echo function_exists("ioncube_loader_version")?ioncube_loader_version():"0";' 2>/dev/null || true)"
     DST="${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
 
     [[ ! -d $IONCUBE_DIR ]] && run "Ensuring ionCube dir exists" bash -lc "install -d '$IONCUBE_DIR'"
 
     if [[ "$CUR_VER" == "0" || -z "$CUR_VER" ]]; then
-        echo "IonCube is not installed. Installing version $NEW_VER..."
+        echo "IonCube is not installed. Installing version ${NEW_VER}..."
         run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
     elif [[ "$(printf '%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -n1)" != "$CUR_VER" ]]; then
-        echo "Updating IonCube loader from $CUR_VER -> $NEW_VER"
+        echo "Updating IonCube loader from ${CUR_VER} -> ${NEW_VER}"
         run "Uninstalling all old INI files" bash -lc "find /etc/php* -type f -name '*ioncube*.ini' -exec rm -f {} +"
-        run "Uninstalling all old IonCube loader" bash -lc "rm -f /usr/local/ioncube/ioncube_loader_lin_*.so"
+        run "Uninstalling all old IonCube loaders" bash -lc "rm -f ${IONCUBE_DIR}/ioncube_loader_lin_*.so"
         run "Installing IonCube ${NEW_VER}" bash -lc "install -m 0644 '$SO' '$DST'"
     else
-        echo "IonCube loader is up to date ($CUR_VER). Skipping file copy."
+        echo "IonCube loader is up to date (${CUR_VER}). Skipping file copy."
     fi
 
+    ioncube_write_ini "$PHPV"
+    restart_php_fpm
+}
 
-    INI="zend_extension=/usr/local/ioncube/ioncube_loader_lin_${PHPV}.so"
+# Split out so the skip-on-failure path can still (re)write the inis.
+ioncube_write_ini(){
+    local PHPV="$1"
+    local INI="zend_extension=${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
+
+    [[ -f "${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so" ]] || return 0
+
     if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
         run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
         [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
@@ -1512,8 +1571,6 @@ prepare_ioncube(){
     elif [[ -d "/etc/php.d" ]]; then
         run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
     fi
-
-    restart_php_fpm
 }
 
 # ---------------- NGINX layout & config ----------------
