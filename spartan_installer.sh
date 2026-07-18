@@ -1558,20 +1558,20 @@ prepare_ioncube(){
 }
 
 # Split out so the skip-on-failure path can still (re)write the inis.
-ioncube_write_ini(){
-    local PHPV="$1"
-    local INI="zend_extension=${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
+  ioncube_write_ini(){
+      local PHPV="$1"
+      local INI="zend_extension=${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so"
 
-    [[ -f "${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so" ]] || return 0
+      [[ -f "${IONCUBE_DIR}/ioncube_loader_lin_${PHPV}.so" ]] || return 0
 
-    if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
-        run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
-        [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
-        [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
-    elif [[ -d "/etc/php.d" ]]; then
-        run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
-    fi
-}
+      if [[ -d "/etc/php/${PHPV}/cli/conf.d" ]]; then
+          run "Write ionCube ini (CLI)" bash -lc "echo '$INI' > /etc/php/${PHPV}/cli/conf.d/00-ioncube.ini"
+          [[ -d "/etc/php/${PHPV}/fpm/conf.d" ]] && run "Write ionCube ini (FPM)" bash -lc "echo '$INI' > /etc/php/${PHPV}/fpm/conf.d/00-ioncube.ini"
+          [[ -d "/etc/php/${PHPV}/apache2/conf.d" ]] && run "Write ionCube ini (Apache)" bash -lc "echo '$INI' > /etc/php/${PHPV}/apache2/conf.d/00-ioncube.ini"
+      elif [[ -d "/etc/php.d" ]]; then
+          run "Write ionCube ini (/etc/php.d)" bash -lc "echo '$INI' > /etc/php.d/00-ioncube.ini"
+      fi
+  }
 
 # ---------------- NGINX layout & config ----------------
 nginx_layout_detect(){
