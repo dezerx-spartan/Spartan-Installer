@@ -4,7 +4,7 @@
 # Made by HdBento & Anthony S
 
 set -euo pipefail
-trap 'echo "${RED}[ERR]${NC} An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" | tee /dev/tty >&2' ERR
+trap 'echo "${RED}[ERR]${NC} An error occurred at line ${LINENO} while executing: ${BASH_COMMAND}" >&2' ERR
 
 TITLE="DezerX Spartan Installer"
 LOG="/var/log/spartan_installer.log"
